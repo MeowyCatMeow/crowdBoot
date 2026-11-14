@@ -1,0 +1,28 @@
+{
+  "name": "crowd-boot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Devvit mod app: removes comments from, and bans, users whose karma in your subreddit is too low.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/server/index.ts --bundle --platform=node --format=cjs --target=node22 --minify --outfile=dist/server/index.cjs",
+    "dev": "npm run build -- --watch",
+    "check": "tsc",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "login": "devvit login",
+    "playtest": "devvit playtest",
+    "upload": "devvit upload"
+  },
+  "dependencies": {
+    "@devvit/web": "0.15.3",
+    "devvit": "0.15.3",
+    "express": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.25.9",
+    "typescript": "^7.0.2"
+  },
+  "license": "BSD-3-Clause"
+}

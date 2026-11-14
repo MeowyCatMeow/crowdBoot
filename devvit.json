@@ -1,0 +1,89 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "crowd-boot",
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "permissions": {
+    "reddit": true
+  },
+  "triggers": {
+    "onCommentCreate": "/internal/triggers/comment-create"
+  },
+  "scripts": {
+    "build": "npm run build",
+    "dev": "npm run dev"
+  },
+  "settings": {
+    "subreddit": {
+      "karmaSource": {
+        "type": "select",
+        "label": "Which subreddit karma to count",
+        "helpText": "Karma the user earned in this subreddit only. Sitewide karma is never used.",
+        "options": [
+          {
+            "label": "Comments + posts in this subreddit",
+            "value": "combined"
+          },
+          {
+            "label": "Comments in this subreddit only",
+            "value": "comments"
+          }
+        ],
+        "defaultValue": "combined"
+      },
+      "removeEnabled": {
+        "type": "boolean",
+        "label": "Remove comments from low-karma users",
+        "defaultValue": true
+      },
+      "removeBelow": {
+        "type": "number",
+        "label": "Remove comments when subreddit karma is below",
+        "helpText": "0 means any negative karma. Must be 0 or lower.",
+        "defaultValue": 0,
+        "validationEndpoint": "/internal/settings/validate-threshold"
+      },
+      "banEnabled": {
+        "type": "boolean",
+        "label": "Ban low-karma users",
+        "defaultValue": true
+      },
+      "banBelow": {
+        "type": "number",
+        "label": "Ban users when subreddit karma is below",
+        "helpText": "Suggested: -10 for small subs, -25 for mid-size, -50 for very large. Must be 0 or lower.",
+        "defaultValue": -10,
+        "validationEndpoint": "/internal/settings/validate-threshold"
+      },
+      "banDurationDays": {
+        "type": "number",
+        "label": "Ban length in days (0 = permanent)",
+        "defaultValue": 0,
+        "validationEndpoint": "/internal/settings/validate-duration"
+      },
+      "banMessage": {
+        "type": "paragraph",
+        "label": "Message sent to the banned user",
+        "helpText": "Placeholders: {username}, {subreddit}, {karma}, {threshold}",
+        "defaultValue": "Hi u/{username}, your karma in r/{subreddit} has dropped to {karma}, which is below this community's limit of {threshold}. You have been banned automatically. If you think this is a mistake please contact the moderators of this subreddit."
+      },
+      "exemptApproved": {
+        "type": "boolean",
+        "label": "Never act on approved users",
+        "helpText": "Moderators are always exempt.",
+        "defaultValue": true
+      },
+      "exemptUsers": {
+        "type": "string",
+        "label": "Usernames that are always exempt",
+        "helpText": "Comma-separated, without u/. Example: alice, bob",
+        "defaultValue": ""
+      }
+    }
+  },
+  "dev": {
+    "subreddit": "crowd_boot_dev"
+  }
+}
