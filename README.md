@@ -39,6 +39,16 @@ and karma don't have a 1:1 relationship. Reddit works it out with its own
 formula. Crowd Boot does no maths of its own: it acts on the subreddit karma
 Reddit reports for the user at the moment they comment.
 
+## Moderators have the final say
+
+- **Unban a user Crowd Boot banned** and it will never ban that user again.
+- **Approve a comment Crowd Boot removed** and it will stop removing that
+  user's comments.
+
+Crowd Boot leaves a mod note on the user when this happens. It keeps no karma
+or score of its own: it only remembers which of its actions a moderator
+reversed.
+
 ## Who is never touched
 
 - Moderators

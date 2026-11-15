@@ -10,17 +10,50 @@ import {
   type Karma,
   parseConfig,
   processComment,
+  processModAction,
+  type Store,
   thresholdError,
 } from './core.ts';
 
 const EVENT = { commentId: 't1_abc', authorName: 'SomeUser', subredditName: 'testsub' };
+
+/** An in-memory stand-in for the app's storage. */
+function memoryStore(): Store & { data: Map<string, string> } {
+  const data = new Map<string, string>();
+  return {
+    data,
+    get: async (key) => data.get(key),
+    set: async (key, value) => void data.set(key, value),
+    del: async (key) => void data.delete(key),
+  };
+}
 
 /** A fake Reddit that records what Crowd Boot did. */
 function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps> = {}) {
   const removed: string[] = [];
   const bans: BanRequest[] = [];
   const logs: string[] = [];
+  const store = memoryStore();
+  const notes: string[] = [];
+  /** Simulates a moderator (or the app itself) doing something in the subreddit. */
+  const modAction = (action: string, moderatorName: string, target: { user?: string; comment?: string }) =>
+    processModAction(
+      {
+        action,
+        moderatorName,
+        subredditName: 'testsub',
+        targetUserName: target.user ?? '',
+        targetCommentId: target.comment ?? '',
+      },
+      {
+        store,
+        appUsername: 'crowd-boot',
+        addModNote: async (_sub, user, note) => void notes.push(`${user}: ${note}`),
+        log: (message) => void logs.push(message),
+      }
+    );
   const deps: Deps = {
+    store,
     getConfig: async () => ({ ...DEFAULT_CONFIG, ...overrides }),
     getKarma: async () => karma,
     isModerator: async () => false,
@@ -31,8 +64,88 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     log: (message) => void logs.push(message),
     ...extra,
   };
-  return { deps, removed, bans, logs };
+  return { deps, removed, bans, logs, store, notes, modAction };
 }
+
+const NEXT_EVENT = { ...EVENT, commentId: 't1_next' };
+
+test('after a moderator unbans a user Crowd Boot banned, it never bans them again', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+  assert.equal(f.bans.length, 1);
+
+  assert.equal(await f.modAction('unbanuser', 'HumanMod', { user: 'someuser' }), 'keep unbanned');
+  assert.match(f.notes.join('\n'), /SomeUser|someuser/);
+  assert.match(f.notes.join('\n'), /no longer ban this user: unbanned by u\/HumanMod/);
+
+  const outcome = await processComment(NEXT_EVENT, f.deps);
+  assert.equal(outcome.banned, false);
+  assert.equal(f.bans.length, 1, 'no second ban');
+  assert.equal(outcome.removed, true, 'comments are still removed: that is a separate override');
+});
+
+test('after a moderator approves a comment Crowd Boot removed, it stops removing that user', async () => {
+  const f = fake({ fromComments: -5 });
+  await processComment(EVENT, f.deps);
+  assert.deepEqual(f.removed, ['t1_abc']);
+
+  assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), 'keep comments');
+
+  const outcome = await processComment(NEXT_EVENT, f.deps);
+  assert.equal(outcome.skipped, 'moderator override');
+  assert.deepEqual(f.removed, ['t1_abc'], 'no second removal');
+});
+
+test('a user with both overrides is left alone completely', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+  await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' });
+  await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' });
+
+  const outcome = await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned, outcome.skipped], [false, false, 'moderator override']);
+});
+
+test('unrelated moderator actions change nothing', async () => {
+  const f = fake({ fromComments: -99 });
+
+  // Unbanning someone Crowd Boot never banned, approving a comment it never removed.
+  assert.equal(await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }), undefined);
+  assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_other' }), undefined);
+  assert.equal(f.store.data.size, 0);
+
+  await processComment(EVENT, f.deps);
+  // The app's own actions and other action types are ignored.
+  assert.equal(await f.modAction('unbanuser', 'crowd-boot', { user: 'SomeUser' }), undefined);
+  assert.equal(await f.modAction('approvecomment', 'Crowd-Boot', { comment: 't1_abc' }), undefined);
+  assert.equal(await f.modAction('removecomment', 'HumanMod', { comment: 't1_abc' }), undefined);
+
+  const outcome = await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
+});
+
+test('the only things stored are action records and overrides, never karma', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+  assert.deepEqual([...f.store.data.entries()].sort(), [
+    ['banned:someuser', '1'],
+    ['removed:t1_abc', 'SomeUser'],
+  ]);
+});
+
+test('a storage failure never blocks or undoes an action', async () => {
+  const broken: Store = {
+    get: async () => undefined,
+    set: async () => {
+      throw new Error('storage down');
+    },
+    del: async () => {},
+  };
+  const f = fake({ fromComments: -99 }, {}, { store: broken });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
+  assert.match(f.logs.join('\n'), /could not record/);
+});
 
 test('leaves users with zero or positive karma alone', async () => {
   for (const karma of [{}, { fromComments: 0 }, { fromComments: 5, fromPosts: -2 }]) {

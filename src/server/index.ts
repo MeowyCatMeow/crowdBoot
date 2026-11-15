@@ -1,6 +1,14 @@
-import { context, createServer, getServerPort, reddit, settings } from '@devvit/web/server';
+import {
+  context,
+  createServer,
+  getServerPort,
+  reddit,
+  redis,
+  settings,
+} from '@devvit/web/server';
 import type {
   OnCommentCreateRequest,
+  OnModActionRequest,
   SettingsValidationRequest,
   SettingsValidationResponse,
   TriggerResponse,
@@ -12,14 +20,29 @@ import {
   durationError,
   parseConfig,
   processComment,
+  processModAction,
+  type Store,
   thresholdError,
 } from './core.ts';
 
 const log = (message: string): void => console.log(`[crowd-boot] ${message}`);
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Crowd Boot's memory of its own actions and moderator reversals, kept per subreddit. */
+const store: Store = {
+  get: (key) => redis.get(key),
+  set: async (key, value, ttlDays) => {
+    const options = ttlDays ? { expiration: new Date(Date.now() + ttlDays * DAY_MS) } : undefined;
+    await redis.set(key, value, options);
+  },
+  del: (key) => redis.del(key),
+};
+
 /** Connects the decision logic in core.ts to the real Reddit API. */
 const deps: Deps = {
   log,
+  store,
   get appUsername() {
     return context.appSlug;
   },
@@ -60,6 +83,35 @@ app.post<unknown, TriggerResponse, OnCommentCreateRequest>(
     } catch (error) {
       // Fail open: if anything goes wrong, leave the comment and user alone.
       log(`error handling comment ${comment?.id ?? '(unknown)'}: ${String(error)}`);
+    }
+    res.json({});
+  }
+);
+
+app.post<unknown, TriggerResponse, OnModActionRequest>(
+  '/internal/triggers/mod-action',
+  async (req, res) => {
+    const { action, moderator, subreddit, targetUser, targetComment } = req.body;
+    try {
+      await processModAction(
+        {
+          action: action ?? '',
+          moderatorName: moderator?.name ?? '',
+          subredditName: subreddit?.name ?? context.subredditName ?? '',
+          targetUserName: targetUser?.name ?? '',
+          targetCommentId: targetComment?.id ?? '',
+        },
+        {
+          store,
+          log,
+          appUsername: context.appSlug,
+          addModNote: async (subredditName, username, note) => {
+            await reddit.addModNote({ subreddit: subredditName, user: username, note });
+          },
+        }
+      );
+    } catch (error) {
+      log(`error handling mod action ${action ?? '(unknown)'}: ${String(error)}`);
     }
     res.json({});
   }

@@ -6,10 +6,12 @@
     "entry": "index.cjs"
   },
   "permissions": {
-    "reddit": true
+    "reddit": true,
+    "redis": true
   },
   "triggers": {
-    "onCommentCreate": "/internal/triggers/comment-create"
+    "onCommentCreate": "/internal/triggers/comment-create",
+    "onModAction": "/internal/triggers/mod-action"
   },
   "scripts": {
     "build": "npm run build",
