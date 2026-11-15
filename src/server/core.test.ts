@@ -18,12 +18,17 @@ import {
 const EVENT = { commentId: 't1_abc', authorName: 'SomeUser', subredditName: 'testsub' };
 
 /** An in-memory stand-in for the app's storage. */
-function memoryStore(): Store & { data: Map<string, string> } {
+function memoryStore(): Store & { data: Map<string, string>; ttls: Map<string, number | undefined> } {
   const data = new Map<string, string>();
+  const ttls = new Map<string, number | undefined>();
   return {
     data,
+    ttls,
     get: async (key) => data.get(key),
-    set: async (key, value) => void data.set(key, value),
+    set: async (key, value, ttlDays) => {
+      data.set(key, value);
+      ttls.set(key, ttlDays);
+    },
     del: async (key) => void data.delete(key),
   };
 }
@@ -145,6 +150,36 @@ test('a storage failure never blocks or undoes an action', async () => {
   const outcome = await processComment(EVENT, f.deps);
   assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
   assert.match(f.logs.join('\n'), /could not record/);
+});
+
+test('a user Reddit has no karma on record for is treated as 0 and left alone', async () => {
+  const f = fake({}, {}, { getKarma: async () => undefined });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.karma, outcome.removed, outcome.banned], [0, false, false]);
+  assert.deepEqual(f.logs, [], 'nothing is logged when nothing is done');
+});
+
+test('a ban also removes the comment when the checkpoints are the wrong way round', async () => {
+  const inverted = { removeBelow: -10, banBelow: -5 };
+  const f = fake({ fromComments: -7 }, inverted);
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
+
+  // Once a moderator has unbanned them, -7 is above the removal checkpoint again.
+  await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' });
+  const next = await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual([next.removed, next.banned, next.skipped], [false, false, 'moderator override']);
+});
+
+test('the record of a temporary ban lapses with the ban; a permanent one is kept', async () => {
+  const temporary = fake({ fromComments: -99 }, { banDurationDays: 7 });
+  await processComment(EVENT, temporary.deps);
+  assert.equal(temporary.store.ttls.get('banned:someuser'), 7);
+
+  const permanent = fake({ fromComments: -99 });
+  await processComment(EVENT, permanent.deps);
+  assert.equal(permanent.store.ttls.get('banned:someuser'), undefined);
+  assert.equal(permanent.store.ttls.get('removed:t1_abc'), 90);
 });
 
 test('leaves users with zero or positive karma alone', async () => {

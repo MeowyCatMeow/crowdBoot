@@ -154,7 +154,8 @@ const REMOVED_MEMORY_DAYS = 90;
 export type Deps = {
   store: Store;
   getConfig(): Promise<Config>;
-  getKarma(username: string): Promise<Karma>;
+  /** Resolves to undefined when Reddit has no karma on record for this user here. */
+  getKarma(username: string): Promise<Karma | undefined>;
   isModerator(subredditName: string, username: string): Promise<boolean>;
   isApproved(subredditName: string, username: string): Promise<boolean>;
   removeComment(commentId: string, note: string): Promise<void>;
@@ -190,12 +191,17 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
 
   // Karma first: almost everyone is above the limit, so most comments stop here
   // after a single API call.
-  const karma = karmaFor(await deps.getKarma(authorName), config.karmaSource);
+  // No karma on record means the user has not earned any here yet: count it as 0.
+  const karma = karmaFor((await deps.getKarma(authorName)) ?? {}, config.karmaSource);
   const decision = decide(karma, config);
+  // Nothing is logged when nothing is done.
   if (!decision.remove && !decision.ban) return { ...NOTHING, karma };
 
   // A moderator who reversed an earlier Crowd Boot action has the final say.
   if (decision.ban && (await deps.store.get(keys.keepUnbanned(author)))) decision.ban = false;
+  // A ban always takes the comment with it, even if the two checkpoints were
+  // entered the wrong way round (ban checkpoint above the removal checkpoint).
+  if (decision.ban && config.removeEnabled) decision.remove = true;
   if (decision.remove && (await deps.store.get(keys.keepComments(author)))) decision.remove = false;
   if (!decision.remove && !decision.ban) {
     return { ...NOTHING, karma, skipped: 'moderator override' };
@@ -212,11 +218,9 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   // Remove and ban independently, so a failure in one doesn't block the other.
   let removed = false;
   if (decision.remove) {
+    const limit = decision.ban ? Math.max(config.removeBelow, config.banBelow) : config.removeBelow;
     try {
-      await deps.removeComment(
-        commentId,
-        `Crowd Boot: subreddit karma ${karma} is below ${config.removeBelow}`
-      );
+      await deps.removeComment(commentId, `Crowd Boot: subreddit karma ${karma} is below ${limit}`);
       removed = true;
       deps.log(`removed comment ${commentId} by ${who}`);
       await remember(deps, keys.removed(commentId), authorName, REMOVED_MEMORY_DAYS);
@@ -246,7 +250,9 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
       await deps.banUser(request);
       banned = true;
       deps.log(`banned ${who}`);
-      await remember(deps, keys.banned(author), '1');
+      // A temporary ban that runs out on its own was not reversed by anyone, so
+      // the record of it lapses with the ban.
+      await remember(deps, keys.banned(author), '1', config.banDurationDays || undefined);
     } catch (error) {
       deps.log(`FAILED to ban ${who}: ${String(error)}`);
     }

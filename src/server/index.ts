@@ -47,7 +47,15 @@ const deps: Deps = {
     return context.appSlug;
   },
   getConfig: async () => parseConfig(await settings.getAll<Record<string, unknown>>()),
-  getKarma: (username) => reddit.getUserKarmaFromCurrentSubreddit(username),
+  getKarma: async (username) => {
+    try {
+      return await reddit.getUserKarmaFromCurrentSubreddit(username);
+    } catch (error) {
+      // Reddit answers "not found" for someone who has no karma in this subreddit yet.
+      if (/NOT_FOUND/.test(String(error))) return undefined;
+      throw error;
+    }
+  },
   isModerator: async (subredditName, username) =>
     (await reddit.getModerators({ subredditName, username }).all()).length > 0,
   isApproved: async (subredditName, username) =>
