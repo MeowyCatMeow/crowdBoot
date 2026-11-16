@@ -68,7 +68,7 @@
       "banMessage": {
         "type": "paragraph",
         "label": "Message sent to the banned user",
-        "helpText": "Placeholders: {username}, {subreddit}, {karma}, {threshold}",
+        "helpText": "Placeholders: {username}, {subreddit}, {karma}, {threshold}. Up to 1000 characters; anything longer is cut off.",
         "defaultValue": "Hi u/{username}, your karma in r/{subreddit} has dropped to {karma}, which is below this community's limit of {threshold}. You have been banned automatically. If you think this is a mistake please contact the moderators of this subreddit."
       },
       "exemptApproved": {

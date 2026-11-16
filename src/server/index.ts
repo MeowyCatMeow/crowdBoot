@@ -39,6 +39,9 @@ const store: Store = {
   del: (key) => redis.del(key),
 };
 
+const named = (username: string) => (user: { username: string }) =>
+  user.username.toLowerCase() === username.toLowerCase();
+
 /** Connects the decision logic in core.ts to the real Reddit API. */
 const deps: Deps = {
   log,
@@ -56,10 +59,12 @@ const deps: Deps = {
       throw error;
     }
   },
+  // Reddit is asked for this one user, and the answer is still checked by name,
+  // so a wider list than expected can never make everyone look exempt.
   isModerator: async (subredditName, username) =>
-    (await reddit.getModerators({ subredditName, username }).all()).length > 0,
+    (await reddit.getModerators({ subredditName, username }).all()).some(named(username)),
   isApproved: async (subredditName, username) =>
-    (await reddit.getApprovedUsers({ subredditName, username }).all()).length > 0,
+    (await reddit.getApprovedUsers({ subredditName, username }).all()).some(named(username)),
   removeComment: async (commentId, note) => {
     await reddit.remove(commentId as `t1_${string}`, false);
     try {
@@ -73,7 +78,8 @@ const deps: Deps = {
 };
 
 const app = express();
-app.use(express.json());
+// A comment event carries its whole parent post, which can exceed the 100 KB default.
+app.use(express.json({ limit: '10mb' }));
 
 app.post<unknown, TriggerResponse, OnCommentCreateRequest>(
   '/internal/triggers/comment-create',

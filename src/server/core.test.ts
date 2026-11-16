@@ -40,6 +40,9 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
   const logs: string[] = [];
   const store = memoryStore();
   const notes: string[] = [];
+  /** A clock the test controls. */
+  let time = START;
+  const wait = (ms: number) => void (time += ms);
   /** Simulates a moderator (or the app itself) doing something in the subreddit. */
   const modAction = (action: string, moderatorName: string, target: { user?: string; comment?: string }) =>
     processModAction(
@@ -66,11 +69,15 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     removeComment: async (id) => void removed.push(id),
     banUser: async (request) => void bans.push(request),
     appUsername: 'crowd-boot',
+    now: () => time,
     log: (message) => void logs.push(message),
     ...extra,
   };
-  return { deps, removed, bans, logs, store, notes, modAction };
+  return { deps, removed, bans, logs, store, notes, modAction, wait };
 }
+
+const START = 1_700_000_000_000;
+const HOUR = 60 * 60 * 1000;
 
 const NEXT_EVENT = { ...EVENT, commentId: 't1_next' };
 
@@ -124,7 +131,12 @@ test('unrelated moderator actions change nothing', async () => {
   assert.equal(await f.modAction('unbanuser', 'crowd-boot', { user: 'SomeUser' }), undefined);
   assert.equal(await f.modAction('approvecomment', 'Crowd-Boot', { comment: 't1_abc' }), undefined);
   assert.equal(await f.modAction('removecomment', 'HumanMod', { comment: 't1_abc' }), undefined);
+  // AutoModerator and Reddit are not people, so their approvals are not overrides.
+  assert.equal(await f.modAction('approvecomment', 'AutoModerator', { comment: 't1_abc' }), undefined);
+  assert.equal(await f.modAction('unbanuser', 'reddit', { user: 'SomeUser' }), undefined);
+  assert.deepEqual(f.notes, []);
 
+  f.wait(HOUR);
   const outcome = await processComment(NEXT_EVENT, f.deps);
   assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
 });
@@ -133,9 +145,44 @@ test('the only things stored are action records and overrides, never karma', asy
   const f = fake({ fromComments: -99 });
   await processComment(EVENT, f.deps);
   assert.deepEqual([...f.store.data.entries()].sort(), [
-    ['banned:someuser', '1'],
+    ['banned:someuser', String(START)],
     ['removed:t1_abc', 'SomeUser'],
   ]);
+});
+
+test('a second comment moments after a ban is removed but does not ban again', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+
+  f.wait(5_000);
+  const second = await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual([second.removed, second.banned], [true, false]);
+  assert.equal(f.bans.length, 1, 'one ban, one ban message');
+
+  // Much later (for example after a temporary ban ran out) the user can be banned again.
+  f.wait(HOUR);
+  const later = await processComment({ ...EVENT, commentId: 't1_later' }, f.deps);
+  assert.equal(later.banned, true);
+  assert.equal(f.bans.length, 2);
+});
+
+test('a ban recorded by an older version does not block a new ban', async () => {
+  const f = fake({ fromComments: -99 });
+  f.store.data.set('banned:someuser', '1');
+  const outcome = await processComment(EVENT, f.deps);
+  assert.equal(outcome.banned, true);
+});
+
+test('an over-long ban message is cut to what Reddit accepts', async () => {
+  const f = fake({ fromComments: -99 }, { banMessage: 'x'.repeat(5000) });
+  await processComment(EVENT, f.deps);
+  assert.equal(f.bans[0]!.message.length, 1000);
+});
+
+test('unknown placeholders in the ban message are left as written', async () => {
+  const f = fake({ fromComments: -99 }, { banMessage: '{username} {toString} {nope}' });
+  await processComment(EVENT, f.deps);
+  assert.equal(f.bans[0]!.message, 'SomeUser {toString} {nope}');
 });
 
 test('a storage failure never blocks or undoes an action', async () => {

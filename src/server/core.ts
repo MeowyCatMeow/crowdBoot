@@ -39,6 +39,15 @@ export const DEFAULT_CONFIG: Config = {
 /** Reddit's limit for a ban length, in days. */
 export const MAX_BAN_DAYS = 999;
 
+/** Reddit rejects a ban whose message is longer than this, so longer ones are cut. */
+export const MAX_BAN_MESSAGE = 1000;
+
+/**
+ * A second comment can arrive before the first ban has taken effect. For this
+ * long after banning someone, Crowd Boot will not ban (and message) them again.
+ */
+const REBAN_QUIET_MS = 10 * 60 * 1000;
+
 type RawSettings = Record<string, unknown>;
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -101,7 +110,7 @@ export function decide(karma: number, config: Config): { remove: boolean; ban: b
 
 export function fillTemplate(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (match, key: string) =>
-    key in values ? String(values[key]) : match
+    Object.hasOwn(values, key) ? String(values[key]) : match
   );
 }
 
@@ -138,7 +147,7 @@ export type Store = {
 };
 
 const keys = {
-  /** Crowd Boot banned this user. */
+  /** Crowd Boot banned this user. The value is when, in milliseconds. */
   banned: (user: string) => `banned:${user.toLowerCase()}`,
   /** Crowd Boot removed this comment. The value is the author's username. */
   removed: (commentId: string) => `removed:${commentId}`,
@@ -162,6 +171,8 @@ export type Deps = {
   banUser(request: BanRequest): Promise<void>;
   /** The app's own account name, so it never acts on itself. */
   appUsername?: string | undefined;
+  /** The current time in milliseconds. Defaults to the real clock. */
+  now?(): number;
   log(message: string): void;
 };
 
@@ -230,7 +241,8 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   }
 
   let banned = false;
-  if (decision.ban) {
+  const now = deps.now?.() ?? Date.now();
+  if (decision.ban && !(await bannedMomentsAgo(deps, author, now))) {
     const request: BanRequest = {
       username: authorName,
       subredditName,
@@ -241,7 +253,7 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
         subreddit: subredditName,
         karma,
         threshold: config.banBelow,
-      }),
+      }).slice(0, MAX_BAN_MESSAGE),
       context: commentId,
     };
     if (config.banDurationDays > 0) request.duration = config.banDurationDays;
@@ -252,13 +264,23 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
       deps.log(`banned ${who}`);
       // A temporary ban that runs out on its own was not reversed by anyone, so
       // the record of it lapses with the ban.
-      await remember(deps, keys.banned(author), '1', config.banDurationDays || undefined);
+      await remember(deps, keys.banned(author), String(now), config.banDurationDays || undefined);
     } catch (error) {
       deps.log(`FAILED to ban ${who}: ${String(error)}`);
     }
   }
 
   return { karma, removed, banned };
+}
+
+/** True if Crowd Boot banned this user within the last few minutes. Never throws. */
+async function bannedMomentsAgo(deps: Deps, author: string, now: number): Promise<boolean> {
+  try {
+    // A missing record gives NaN, and any comparison with NaN is false.
+    return now - Number(await deps.store.get(keys.banned(author))) < REBAN_QUIET_MS;
+  } catch {
+    return false;
+  }
 }
 
 /** Records an action so a later reversal by a moderator can be recognised. Never throws. */
@@ -295,8 +317,10 @@ export async function processModAction(
   deps: ModActionDeps
 ): Promise<'keep unbanned' | 'keep comments' | undefined> {
   const moderator = event.moderatorName;
-  // Crowd Boot's own removals and bans arrive here too. Only people count.
-  if (!moderator || moderator.toLowerCase() === deps.appUsername?.toLowerCase()) return undefined;
+  // Crowd Boot's own removals and bans arrive here too, and so do AutoModerator's
+  // and Reddit's. Only people count.
+  const who = moderator.toLowerCase();
+  if (!who || SYSTEM_ACCOUNTS.has(who) || who === deps.appUsername?.toLowerCase()) return undefined;
 
   if (event.action === 'unbanuser') {
     const user = event.targetUserName;
