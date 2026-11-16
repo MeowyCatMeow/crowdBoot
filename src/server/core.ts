@@ -379,8 +379,14 @@ export type CommentDeleteEvent = {
 /**
  * Reddit says a comment was deleted. If its author or Reddit itself deleted
  * it, nobody can approve it any more, so the record that Crowd Boot removed it
- * is dropped at once. A moderator's removal (Crowd Boot's own included) is not
- * a deletion: that record is still needed to recognise an approval.
+ * is dropped at once. A moderator's removal (Crowd Boot's own included) also
+ * arrives here, with source 3, and is not a deletion: that record is still
+ * needed to recognise an approval.
+ *
+ * Seen live in November 2026: Reddit does not send this event when an author
+ * deletes a comment a moderator had already removed, which is every comment
+ * Crowd Boot holds a record for. Until Reddit fixes that, the expiry on each
+ * record (MEMORY_DAYS) is what really clears it.
  */
 export async function processCommentDelete(
   event: CommentDeleteEvent,
