@@ -45,9 +45,12 @@ Reddit reports for the user at the moment they comment.
 - **Approve a comment Crowd Boot removed** and it will stop removing that
   user's comments.
 
-Crowd Boot leaves a mod note on the user when this happens. It keeps no karma
-or score of its own: it only remembers which of its actions a moderator
-reversed.
+Crowd Boot records this as a mod note on the user. Delete that note and Crowd
+Boot treats the user like anyone else again.
+
+Crowd Boot keeps no karma or score of its own. It only remembers its own bans
+and removals, for 30 days, so it can tell when a moderator reverses one. To
+protect someone it banned longer ago than that, add them to your exempt list.
 
 ## Who is never touched
 

@@ -137,12 +137,13 @@ export type BanRequest = {
 };
 
 /**
- * Crowd Boot's only memory: which actions it took, and which of those a
- * moderator later reversed. It never holds karma or any score of its own.
+ * Crowd Boot's only memory: the bans and removals it made recently, so that a
+ * moderator reversing one can be recognised. Every record needs an expiry, so
+ * nothing about a user can be kept for good. It never holds karma or any score.
  */
 export type Store = {
   get(key: string): Promise<string | undefined>;
-  set(key: string, value: string, ttlDays?: number): Promise<void>;
+  set(key: string, value: string, ttlDays: number): Promise<void>;
   del(key: string): Promise<void>;
 };
 
@@ -151,18 +152,37 @@ const keys = {
   banned: (user: string) => `banned:${user.toLowerCase()}`,
   /** Crowd Boot removed this comment. The value is the author's username. */
   removed: (commentId: string) => `removed:${commentId}`,
-  /** A moderator unbanned this user after a Crowd Boot ban: never ban again. */
-  keepUnbanned: (user: string) => `pardon:ban:${user.toLowerCase()}`,
-  /** A moderator approved a comment Crowd Boot removed: never remove again. */
-  keepComments: (user: string) => `pardon:remove:${user.toLowerCase()}`,
 };
 
-/** How long Crowd Boot remembers that it removed a particular comment. */
-const REMOVED_MEMORY_DAYS = 90;
+/**
+ * How long Crowd Boot remembers one of its own bans or removals. Reddit's rules
+ * for apps ask for stored user data to be gone within 30 days.
+ */
+export const MEMORY_DAYS = 30;
+
+/**
+ * A moderator's override is a mod note on the user, kept by Reddit and not by
+ * Crowd Boot. Any note that starts with one of these counts, so a moderator can
+ * also write one by hand, and deleting the note ends the override.
+ */
+export const BAN_OVERRIDE = 'Crowd Boot will no longer ban this user';
+export const REMOVE_OVERRIDE = "Crowd Boot will no longer remove this user's comments";
+
+/** Reddit's limit for the text of a mod note. */
+const MAX_MOD_NOTE = 250;
+
+/** Which overrides a user's mod notes contain. */
+export function overridesIn(notes: readonly string[]): { ban: boolean; remove: boolean } {
+  const has = (marker: string): boolean =>
+    notes.some((note) => note.trim().toLowerCase().startsWith(marker.toLowerCase()));
+  return { ban: has(BAN_OVERRIDE), remove: has(REMOVE_OVERRIDE) };
+}
 
 export type Deps = {
   store: Store;
   getConfig(): Promise<Config>;
+  /** The text of every note moderators have left on this user in this subreddit. */
+  getModNotes(subredditName: string, username: string): Promise<string[]>;
   /** Resolves to undefined when Reddit has no karma on record for this user here. */
   getKarma(username: string): Promise<Karma | undefined>;
   isModerator(subredditName: string, username: string): Promise<boolean>;
@@ -209,11 +229,12 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   if (!decision.remove && !decision.ban) return { ...NOTHING, karma };
 
   // A moderator who reversed an earlier Crowd Boot action has the final say.
-  if (decision.ban && (await deps.store.get(keys.keepUnbanned(author)))) decision.ban = false;
+  const override = overridesIn(await deps.getModNotes(subredditName, authorName));
+  if (override.ban) decision.ban = false;
   // A ban always takes the comment with it, even if the two checkpoints were
   // entered the wrong way round (ban checkpoint above the removal checkpoint).
   if (decision.ban && config.removeEnabled) decision.remove = true;
-  if (decision.remove && (await deps.store.get(keys.keepComments(author)))) decision.remove = false;
+  if (override.remove) decision.remove = false;
   if (!decision.remove && !decision.ban) {
     return { ...NOTHING, karma, skipped: 'moderator override' };
   }
@@ -234,7 +255,7 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
       await deps.removeComment(commentId, `Crowd Boot: subreddit karma ${karma} is below ${limit}`);
       removed = true;
       deps.log(`removed comment ${commentId} by ${who}`);
-      await remember(deps, keys.removed(commentId), authorName, REMOVED_MEMORY_DAYS);
+      await remember(deps, keys.removed(commentId), authorName, MEMORY_DAYS);
     } catch (error) {
       deps.log(`FAILED to remove comment ${commentId} by ${who}: ${String(error)}`);
     }
@@ -263,8 +284,9 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
       banned = true;
       deps.log(`banned ${who}`);
       // A temporary ban that runs out on its own was not reversed by anyone, so
-      // the record of it lapses with the ban.
-      await remember(deps, keys.banned(author), String(now), config.banDurationDays || undefined);
+      // the record of it lapses with the ban, and never outlives MEMORY_DAYS.
+      const days = Math.min(config.banDurationDays || MEMORY_DAYS, MEMORY_DAYS);
+      await remember(deps, keys.banned(author), String(now), days);
     } catch (error) {
       deps.log(`FAILED to ban ${who}: ${String(error)}`);
     }
@@ -284,7 +306,7 @@ async function bannedMomentsAgo(deps: Deps, author: string, now: number): Promis
 }
 
 /** Records an action so a later reversal by a moderator can be recognised. Never throws. */
-async function remember(deps: Deps, key: string, value: string, ttlDays?: number): Promise<void> {
+async function remember(deps: Deps, key: string, value: string, ttlDays: number): Promise<void> {
   try {
     await deps.store.set(key, value, ttlDays);
   } catch (error) {
@@ -309,8 +331,10 @@ export type ModActionDeps = {
 };
 
 /**
- * Watches for a moderator undoing something Crowd Boot did. From then on Crowd
- * Boot leaves that user alone for that kind of action.
+ * Watches for a moderator undoing something Crowd Boot did, and records it as
+ * a mod note on the user. From then on Crowd Boot leaves that user alone for
+ * that kind of action. If the note cannot be written this throws, and the
+ * record of the action is kept.
  */
 export async function processModAction(
   event: ModActionEvent,
@@ -325,15 +349,10 @@ export async function processModAction(
   if (event.action === 'unbanuser') {
     const user = event.targetUserName;
     if (!user || !(await deps.store.get(keys.banned(user)))) return undefined;
-    await deps.store.set(keys.keepUnbanned(user), moderator);
+    const note = `${BAN_OVERRIDE}: unbanned by u/${moderator}.`;
+    await deps.addModNote(event.subredditName, user, note.slice(0, MAX_MOD_NOTE));
     await deps.store.del(keys.banned(user));
     deps.log(`u/${moderator} unbanned u/${user}: will not ban this user again`);
-    await explain(
-      event.subredditName,
-      user,
-      `Crowd Boot will no longer ban this user: unbanned by u/${moderator}.`,
-      deps
-    );
     return 'keep unbanned';
   }
 
@@ -341,33 +360,14 @@ export async function processModAction(
     const commentId = event.targetCommentId;
     const author = commentId ? await deps.store.get(keys.removed(commentId)) : undefined;
     if (!author) return undefined;
-    await deps.store.set(keys.keepComments(author), moderator);
+    const note = `${REMOVE_OVERRIDE}: u/${moderator} approved one it removed.`;
+    await deps.addModNote(event.subredditName, author, note.slice(0, MAX_MOD_NOTE));
     await deps.store.del(keys.removed(commentId));
     deps.log(`u/${moderator} approved a removed comment by u/${author}: will not remove again`);
-    await explain(
-      event.subredditName,
-      author,
-      `Crowd Boot will no longer remove this user's comments: u/${moderator} approved one it removed.`,
-      deps
-    );
     return 'keep comments';
   }
 
   return undefined;
-}
-
-/** Leaves a mod note so other moderators can see why Crowd Boot stopped acting. Never throws. */
-async function explain(
-  subredditName: string,
-  username: string,
-  note: string,
-  deps: ModActionDeps
-): Promise<void> {
-  try {
-    await deps.addModNote(subredditName, username, note.slice(0, 250));
-  } catch (error) {
-    deps.log(`could not add mod note for u/${username}: ${String(error)}`);
-  }
 }
 
 /** Shared by the settings-page validators. Returns an error message, or undefined if valid. */

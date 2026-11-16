@@ -8,6 +8,7 @@ import {
   type Deps,
   durationError,
   type Karma,
+  type ModActionDeps,
   parseConfig,
   processComment,
   processModAction,
@@ -18,9 +19,9 @@ import {
 const EVENT = { commentId: 't1_abc', authorName: 'SomeUser', subredditName: 'testsub' };
 
 /** An in-memory stand-in for the app's storage. */
-function memoryStore(): Store & { data: Map<string, string>; ttls: Map<string, number | undefined> } {
+function memoryStore(): Store & { data: Map<string, string>; ttls: Map<string, number> } {
   const data = new Map<string, string>();
-  const ttls = new Map<string, number | undefined>();
+  const ttls = new Map<string, number>();
   return {
     data,
     ttls,
@@ -39,12 +40,22 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
   const bans: BanRequest[] = [];
   const logs: string[] = [];
   const store = memoryStore();
+  /** Reddit's mod notes, each written as "username: text". */
   const notes: string[] = [];
+  const notesOn = (user: string): string[] =>
+    notes
+      .filter((entry) => entry.toLowerCase().startsWith(`${user.toLowerCase()}: `))
+      .map((entry) => entry.slice(user.length + 2));
   /** A clock the test controls. */
   let time = START;
   const wait = (ms: number) => void (time += ms);
   /** Simulates a moderator (or the app itself) doing something in the subreddit. */
-  const modAction = (action: string, moderatorName: string, target: { user?: string; comment?: string }) =>
+  const modAction = (
+    action: string,
+    moderatorName: string,
+    target: { user?: string; comment?: string },
+    addModNote: ModActionDeps['addModNote'] = async (_sub, user, note) => void notes.push(`${user}: ${note}`)
+  ) =>
     processModAction(
       {
         action,
@@ -53,16 +64,12 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
         targetUserName: target.user ?? '',
         targetCommentId: target.comment ?? '',
       },
-      {
-        store,
-        appUsername: 'crowd-boot',
-        addModNote: async (_sub, user, note) => void notes.push(`${user}: ${note}`),
-        log: (message) => void logs.push(message),
-      }
+      { store, appUsername: 'crowd-boot', addModNote, log: (message) => void logs.push(message) }
     );
   const deps: Deps = {
     store,
     getConfig: async () => ({ ...DEFAULT_CONFIG, ...overrides }),
+    getModNotes: async (_sub, user) => notesOn(user),
     getKarma: async () => karma,
     isModerator: async () => false,
     isApproved: async () => false,
@@ -141,13 +148,61 @@ test('unrelated moderator actions change nothing', async () => {
   assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
 });
 
-test('the only things stored are action records and overrides, never karma', async () => {
+test('the only things stored are short-lived records of its own actions, never karma', async () => {
   const f = fake({ fromComments: -99 });
   await processComment(EVENT, f.deps);
   assert.deepEqual([...f.store.data.entries()].sort(), [
     ['banned:someuser', String(START)],
     ['removed:t1_abc', 'SomeUser'],
   ]);
+  assert.deepEqual([...f.store.ttls.values()], [30, 30], 'every record expires within 30 days');
+
+  // Once a moderator reverses them, the override lives in Reddit's mod notes and
+  // nothing about the user is left in the app's storage.
+  await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' });
+  await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' });
+  assert.equal(f.store.data.size, 0);
+  assert.equal(f.notes.length, 2);
+});
+
+test('a moderator can write the override note by hand, and deleting it ends the override', async () => {
+  const f = fake({ fromComments: -99 });
+  f.notes.push('someuser:   crowd boot will no longer ban this user (appeal accepted)');
+  const spared = await processComment(EVENT, f.deps);
+  assert.deepEqual([spared.removed, spared.banned], [true, false]);
+
+  f.notes.length = 0;
+  const outcome = await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
+});
+
+test('notes about other things, or other users, are not overrides', async () => {
+  const f = fake({ fromComments: -99 });
+  f.notes.push('SomeUser: Warned for rule 2. Crowd Boot will no longer ban this user is not how this starts');
+  f.notes.push('OtherUser: Crowd Boot will no longer ban this user: unbanned by u/HumanMod.');
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
+});
+
+test('if the mod notes cannot be read, nothing is done', async () => {
+  const f = fake({ fromComments: -99 }, {}, {
+    getModNotes: async () => {
+      throw new Error('reddit is down');
+    },
+  });
+  await assert.rejects(processComment(EVENT, f.deps), /reddit is down/);
+  assert.deepEqual([f.removed, f.bans], [[], []]);
+});
+
+test('if the override note cannot be written, the reversal can still be recognised later', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+  const broken = async () => {
+    throw new Error('reddit is down');
+  };
+  await assert.rejects(f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }, broken));
+  assert.ok(f.store.data.has('banned:someuser'), 'the record of the ban is kept');
+  assert.equal(await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }), 'keep unbanned');
 });
 
 test('a second comment moments after a ban is removed but does not ban again', async () => {
@@ -218,15 +273,19 @@ test('a ban also removes the comment when the checkpoints are the wrong way roun
   assert.deepEqual([next.removed, next.banned, next.skipped], [false, false, 'moderator override']);
 });
 
-test('the record of a temporary ban lapses with the ban; a permanent one is kept', async () => {
-  const temporary = fake({ fromComments: -99 }, { banDurationDays: 7 });
-  await processComment(EVENT, temporary.deps);
-  assert.equal(temporary.store.ttls.get('banned:someuser'), 7);
+test('the record of a ban lapses with a short ban, and never outlives 30 days', async () => {
+  const short = fake({ fromComments: -99 }, { banDurationDays: 7 });
+  await processComment(EVENT, short.deps);
+  assert.equal(short.store.ttls.get('banned:someuser'), 7);
+
+  const long = fake({ fromComments: -99 }, { banDurationDays: 90 });
+  await processComment(EVENT, long.deps);
+  assert.equal(long.store.ttls.get('banned:someuser'), 30);
 
   const permanent = fake({ fromComments: -99 });
   await processComment(EVENT, permanent.deps);
-  assert.equal(permanent.store.ttls.get('banned:someuser'), undefined);
-  assert.equal(permanent.store.ttls.get('removed:t1_abc'), 90);
+  assert.equal(permanent.store.ttls.get('banned:someuser'), 30);
+  assert.equal(permanent.store.ttls.get('removed:t1_abc'), 30);
 });
 
 test('leaves users with zero or positive karma alone', async () => {

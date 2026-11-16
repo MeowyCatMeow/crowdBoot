@@ -29,12 +29,12 @@ const log = (message: string): void => console.log(`[crowd-boot] ${message}`);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Crowd Boot's memory of its own actions and moderator reversals, kept per subreddit. */
+/** Crowd Boot's short memory of its own bans and removals, kept per subreddit. */
 const store: Store = {
   get: (key) => redis.get(key),
+  // Every record expires: nothing about a user is ever stored for good.
   set: async (key, value, ttlDays) => {
-    const options = ttlDays ? { expiration: new Date(Date.now() + ttlDays * DAY_MS) } : undefined;
-    await redis.set(key, value, options);
+    await redis.set(key, value, { expiration: new Date(Date.now() + ttlDays * DAY_MS) });
   },
   del: (key) => redis.del(key),
 };
@@ -59,6 +59,11 @@ const deps: Deps = {
       throw error;
     }
   },
+  // Overrides live in Reddit's own mod notes, so Reddit looks after that data.
+  getModNotes: async (subredditName, username) =>
+    (await reddit.getModNotes({ subreddit: subredditName, user: username, filter: 'NOTE' }).all()).map(
+      (note) => note.userNote?.note ?? ''
+    ),
   // Reddit is asked for this one user, and the answer is still checked by name,
   // so a wider list than expected can never make everyone look exempt.
   isModerator: async (subredditName, username) =>
