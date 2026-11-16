@@ -18,6 +18,7 @@ import express from 'express';
 import {
   type Deps,
   durationError,
+  type ModActionDeps,
   parseConfig,
   processComment,
   processModAction,
@@ -82,6 +83,18 @@ const deps: Deps = {
   banUser: (request) => reddit.banUser(request),
 };
 
+/** What the handler for moderator actions needs. */
+const modDeps: ModActionDeps = {
+  log,
+  store,
+  get appUsername() {
+    return context.appSlug;
+  },
+  addModNote: async (subredditName, username, note) => {
+    await reddit.addModNote({ subreddit: subredditName, user: username, note });
+  },
+};
+
 const app = express();
 // A comment event carries its whole parent post, which can exceed the 100 KB default.
 app.use(express.json({ limit: '10mb' }));
@@ -120,14 +133,7 @@ app.post<unknown, TriggerResponse, OnModActionRequest>(
           targetUserName: targetUser?.name ?? '',
           targetCommentId: targetComment?.id ?? '',
         },
-        {
-          store,
-          log,
-          appUsername: context.appSlug,
-          addModNote: async (subredditName, username, note) => {
-            await reddit.addModNote({ subreddit: subredditName, user: username, note });
-          },
-        }
+        modDeps
       );
     } catch (error) {
       log(`error handling mod action ${action ?? '(unknown)'}: ${String(error)}`);
