@@ -11,7 +11,8 @@
   },
   "triggers": {
     "onCommentCreate": "/internal/triggers/comment-create",
-    "onModAction": "/internal/triggers/mod-action"
+    "onModAction": "/internal/triggers/mod-action",
+    "onCommentDelete": "/internal/triggers/comment-delete"
   },
   "scripts": {
     "build": "npm run build",

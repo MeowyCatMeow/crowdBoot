@@ -8,6 +8,7 @@ import {
 } from '@devvit/web/server';
 import type {
   OnCommentCreateRequest,
+  OnCommentDeleteRequest,
   OnModActionRequest,
   SettingsValidationRequest,
   SettingsValidationResponse,
@@ -20,6 +21,7 @@ import {
   durationError,
   parseConfig,
   processComment,
+  processCommentDelete,
   processModAction,
   type Store,
   thresholdError,
@@ -127,6 +129,19 @@ app.post<unknown, TriggerResponse, OnModActionRequest>(
       );
     } catch (error) {
       log(`error handling mod action ${action ?? '(unknown)'}: ${String(error)}`);
+    }
+    res.json({});
+  }
+);
+
+app.post<unknown, TriggerResponse, OnCommentDeleteRequest>(
+  '/internal/triggers/comment-delete',
+  async (req, res) => {
+    const { commentId, source } = req.body;
+    try {
+      await processCommentDelete({ commentId: commentId ?? '', source }, deps);
+    } catch (error) {
+      log(`error handling deletion of comment ${commentId ?? '(unknown)'}: ${String(error)}`);
     }
     res.json({});
   }

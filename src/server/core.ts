@@ -370,6 +370,30 @@ export async function processModAction(
   return undefined;
 }
 
+export type CommentDeleteEvent = {
+  commentId: string;
+  /** Who deleted it, as Reddit reports it: a name such as "USER" or its number. */
+  source: unknown;
+};
+
+/**
+ * Reddit says a comment was deleted. If its author or Reddit itself deleted
+ * it, nobody can approve it any more, so the record that Crowd Boot removed it
+ * is dropped at once. A moderator's removal (Crowd Boot's own included) is not
+ * a deletion: that record is still needed to recognise an approval.
+ */
+export async function processCommentDelete(
+  event: CommentDeleteEvent,
+  deps: Pick<Deps, 'store'>
+): Promise<boolean> {
+  const source = String(event.source).toUpperCase();
+  const goneForGood = ['USER', 'ADMIN', '1', '2'].includes(source);
+  if (!event.commentId || !goneForGood) return false;
+  const id = event.commentId.startsWith('t1_') ? event.commentId : `t1_${event.commentId}`;
+  await deps.store.del(keys.removed(id));
+  return true;
+}
+
 /**
  * Writes the mod note that is the override, unless the user already has one.
  * A moderator approving several removed comments then leaves a single note,

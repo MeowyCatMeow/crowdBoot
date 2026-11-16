@@ -11,6 +11,7 @@ import {
   type ModActionDeps,
   parseConfig,
   processComment,
+  processCommentDelete,
   processModAction,
   type Store,
   thresholdError,
@@ -460,4 +461,40 @@ test('settings validators', () => {
   assert.equal(durationError(999), undefined);
   assert.ok(durationError(-1));
   assert.ok(durationError(1000));
+});
+
+test('when the author deletes a removed comment, the record of it is dropped at once', async () => {
+  const f = fake({ fromComments: -5 });
+  await processComment(EVENT, f.deps);
+  assert.ok(f.store.data.has('removed:t1_abc'));
+
+  assert.equal(await processCommentDelete({ commentId: 't1_abc', source: 'USER' }, f.deps), true);
+  assert.equal(f.store.data.size, 0);
+  // Nothing is left to recognise, so a later approval changes nothing.
+  assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), undefined);
+  assert.deepEqual(f.notes, []);
+});
+
+test('a comment deletion is recognised however Reddit spells its source', async () => {
+  for (const source of ['USER', 'user', 1, '1', 'ADMIN', 2]) {
+    const f = fake({ fromComments: -5 });
+    await processComment(EVENT, f.deps);
+    // The id may arrive with or without its "t1_" prefix.
+    assert.equal(await processCommentDelete({ commentId: 'abc', source }, f.deps), true, String(source));
+    assert.equal(f.store.data.size, 0, String(source));
+  }
+});
+
+test("a moderator's removal is not a deletion, so the record is kept", async () => {
+  for (const source of ['MODERATOR', 3, 'UNKNOWN_EVENT_SOURCE', 0, undefined]) {
+    const f = fake({ fromComments: -5 });
+    await processComment(EVENT, f.deps);
+    assert.equal(await processCommentDelete({ commentId: 't1_abc', source }, f.deps), false, String(source));
+    assert.ok(f.store.data.has('removed:t1_abc'), String(source));
+  }
+  // The approval that follows a moderator's removal is still recognised.
+  const f = fake({ fromComments: -5 });
+  await processComment(EVENT, f.deps);
+  await processCommentDelete({ commentId: 't1_abc', source: 'MODERATOR' }, f.deps);
+  assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), 'keep comments');
 });
