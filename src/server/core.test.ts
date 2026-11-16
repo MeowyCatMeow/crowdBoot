@@ -50,11 +50,12 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
   let time = START;
   const wait = (ms: number) => void (time += ms);
   /** Simulates a moderator (or the app itself) doing something in the subreddit. */
+  const writeNote: ModActionDeps['addModNote'] = async (_sub, user, note) => void notes.push(`${user}: ${note}`);
   const modAction = (
     action: string,
     moderatorName: string,
     target: { user?: string; comment?: string },
-    addModNote: ModActionDeps['addModNote'] = async (_sub, user, note) => void notes.push(`${user}: ${note}`)
+    broken: Partial<ModActionDeps> = {}
   ) =>
     processModAction(
       {
@@ -64,12 +65,13 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
         targetUserName: target.user ?? '',
         targetCommentId: target.comment ?? '',
       },
-      { store, appUsername: 'crowd-boot', addModNote, log: (message) => void logs.push(message) }
+      { ...deps, ...broken }
     );
   const deps: Deps = {
     store,
     getConfig: async () => ({ ...DEFAULT_CONFIG, ...overrides }),
     getModNotes: async (_sub, user) => notesOn(user),
+    addModNote: writeNote,
     getKarma: async () => karma,
     isModerator: async () => false,
     isApproved: async () => false,
@@ -197,12 +199,57 @@ test('if the mod notes cannot be read, nothing is done', async () => {
 test('if the override note cannot be written, the reversal can still be recognised later', async () => {
   const f = fake({ fromComments: -99 });
   await processComment(EVENT, f.deps);
-  const broken = async () => {
+  const down = async () => {
     throw new Error('reddit is down');
   };
-  await assert.rejects(f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }, broken));
+  await assert.rejects(f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }, { addModNote: down }));
   assert.ok(f.store.data.has('banned:someuser'), 'the record of the ban is kept');
   assert.equal(await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }), 'keep unbanned');
+});
+
+test('approving several removed comments leaves one note, so deleting it ends the override', async () => {
+  const f = fake({ fromComments: -5 });
+  const ids = ['t1_one', 't1_two', 't1_three'];
+  for (const commentId of ids) await processComment({ ...EVENT, commentId }, f.deps);
+  assert.deepEqual(f.removed, ids);
+
+  for (const comment of ids) {
+    assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment }), 'keep comments');
+  }
+  assert.equal(f.notes.length, 1);
+  assert.equal(f.store.data.size, 0, 'every removal record is cleared');
+
+  f.notes.length = 0;
+  const outcome = await processComment(NEXT_EVENT, f.deps);
+  assert.equal(outcome.removed, true);
+});
+
+test('an unban adds its own note even when a removal override already exists', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+  await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' });
+  await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' });
+  assert.equal(f.notes.length, 2);
+});
+
+test('the override note is still written when the existing notes cannot be read', async () => {
+  const f = fake({ fromComments: -99 });
+  await processComment(EVENT, f.deps);
+  const down = async () => {
+    throw new Error('reddit is down');
+  };
+  assert.equal(
+    await f.modAction('unbanuser', 'HumanMod', { user: 'SomeUser' }, { getModNotes: down }),
+    'keep unbanned'
+  );
+  assert.equal(f.notes.length, 1);
+});
+
+test('a hand-typed override counts despite curly apostrophes, capitals and extra spaces', async () => {
+  const f = fake({ fromComments: -5 });
+  f.notes.push('SomeUser:  CROWD BOOT  will no longer remove this user’s comments');
+  const outcome = await processComment(EVENT, f.deps);
+  assert.equal(outcome.skipped, 'moderator override');
 });
 
 test('a second comment moments after a ban is removed but does not ban again', async () => {

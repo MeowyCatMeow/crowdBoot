@@ -18,7 +18,6 @@ import express from 'express';
 import {
   type Deps,
   durationError,
-  type ModActionDeps,
   parseConfig,
   processComment,
   processModAction,
@@ -65,6 +64,9 @@ const deps: Deps = {
     (await reddit.getModNotes({ subreddit: subredditName, user: username, filter: 'NOTE' }).all()).map(
       (note) => note.userNote?.note ?? ''
     ),
+  addModNote: async (subredditName, username, note) => {
+    await reddit.addModNote({ subreddit: subredditName, user: username, note });
+  },
   // Reddit is asked for this one user, and the answer is still checked by name,
   // so a wider list than expected can never make everyone look exempt.
   isModerator: async (subredditName, username) =>
@@ -81,18 +83,6 @@ const deps: Deps = {
     }
   },
   banUser: (request) => reddit.banUser(request),
-};
-
-/** What the handler for moderator actions needs. */
-const modDeps: ModActionDeps = {
-  log,
-  store,
-  get appUsername() {
-    return context.appSlug;
-  },
-  addModNote: async (subredditName, username, note) => {
-    await reddit.addModNote({ subreddit: subredditName, user: username, note });
-  },
 };
 
 const app = express();
@@ -133,7 +123,7 @@ app.post<unknown, TriggerResponse, OnModActionRequest>(
           targetUserName: targetUser?.name ?? '',
           targetCommentId: targetComment?.id ?? '',
         },
-        modDeps
+        deps
       );
     } catch (error) {
       log(`error handling mod action ${action ?? '(unknown)'}: ${String(error)}`);

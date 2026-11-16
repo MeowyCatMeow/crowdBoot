@@ -171,10 +171,13 @@ export const REMOVE_OVERRIDE = "Crowd Boot will no longer remove this user's com
 /** Reddit's limit for the text of a mod note. */
 const MAX_MOD_NOTE = 250;
 
+/** Ignores case, spacing and the curly apostrophes phones insert, so a hand-typed note still counts. */
+const plain = (text: string): string =>
+  text.trim().toLowerCase().replace(/[‘’ʼ`´]/g, "'").replace(/\s+/g, ' ');
+
 /** Which overrides a user's mod notes contain. */
 export function overridesIn(notes: readonly string[]): { ban: boolean; remove: boolean } {
-  const has = (marker: string): boolean =>
-    notes.some((note) => note.trim().toLowerCase().startsWith(marker.toLowerCase()));
+  const has = (marker: string): boolean => notes.some((note) => plain(note).startsWith(plain(marker)));
   return { ban: has(BAN_OVERRIDE), remove: has(REMOVE_OVERRIDE) };
 }
 
@@ -183,6 +186,7 @@ export type Deps = {
   getConfig(): Promise<Config>;
   /** The text of every note moderators have left on this user in this subreddit. */
   getModNotes(subredditName: string, username: string): Promise<string[]>;
+  addModNote(subredditName: string, username: string, note: string): Promise<void>;
   /** Resolves to undefined when Reddit has no karma on record for this user here. */
   getKarma(username: string): Promise<Karma | undefined>;
   isModerator(subredditName: string, username: string): Promise<boolean>;
@@ -323,12 +327,8 @@ export type ModActionEvent = {
   targetCommentId: string;
 };
 
-export type ModActionDeps = {
-  store: Store;
-  appUsername?: string | undefined;
-  addModNote(subredditName: string, username: string, note: string): Promise<void>;
-  log(message: string): void;
-};
+/** The part of Deps the handler for moderator actions needs. */
+export type ModActionDeps = Pick<Deps, 'store' | 'appUsername' | 'getModNotes' | 'addModNote' | 'log'>;
 
 /**
  * Watches for a moderator undoing something Crowd Boot did, and records it as
@@ -350,7 +350,7 @@ export async function processModAction(
     const user = event.targetUserName;
     if (!user || !(await deps.store.get(keys.banned(user)))) return undefined;
     const note = `${BAN_OVERRIDE}: unbanned by u/${moderator}.`;
-    await deps.addModNote(event.subredditName, user, note.slice(0, MAX_MOD_NOTE));
+    await recordOverride(deps, event.subredditName, user, 'ban', note);
     await deps.store.del(keys.banned(user));
     deps.log(`u/${moderator} unbanned u/${user}: will not ban this user again`);
     return 'keep unbanned';
@@ -361,13 +361,35 @@ export async function processModAction(
     const author = commentId ? await deps.store.get(keys.removed(commentId)) : undefined;
     if (!author) return undefined;
     const note = `${REMOVE_OVERRIDE}: u/${moderator} approved one it removed.`;
-    await deps.addModNote(event.subredditName, author, note.slice(0, MAX_MOD_NOTE));
+    await recordOverride(deps, event.subredditName, author, 'remove', note);
     await deps.store.del(keys.removed(commentId));
     deps.log(`u/${moderator} approved a removed comment by u/${author}: will not remove again`);
     return 'keep comments';
   }
 
   return undefined;
+}
+
+/**
+ * Writes the mod note that is the override, unless the user already has one.
+ * A moderator approving several removed comments then leaves a single note,
+ * so deleting that one note is enough to end the override.
+ */
+async function recordOverride(
+  deps: ModActionDeps,
+  subredditName: string,
+  username: string,
+  kind: 'ban' | 'remove',
+  note: string
+): Promise<void> {
+  let existing: string[] = [];
+  try {
+    existing = await deps.getModNotes(subredditName, username);
+  } catch {
+    // Write it anyway: a second note is better than a lost override.
+  }
+  if (overridesIn(existing)[kind]) return;
+  await deps.addModNote(subredditName, username, note.slice(0, MAX_MOD_NOTE));
 }
 
 /** Shared by the settings-page validators. Returns an error message, or undefined if valid. */
