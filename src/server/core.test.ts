@@ -38,6 +38,7 @@ function memoryStore(): Store & { data: Map<string, string>; ttls: Map<string, n
 /** A fake Reddit that records what Crowd Boot did. */
 function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps> = {}) {
   const removed: string[] = [];
+  const filtered: string[] = [];
   const bans: BanRequest[] = [];
   const logs: string[] = [];
   const store = memoryStore();
@@ -70,12 +71,14 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     );
   const deps: Deps = {
     store,
-    getConfig: async () => ({ ...DEFAULT_CONFIG, ...overrides }),
+    // Most tests are about Remove mode; the Filter tests ask for it by name.
+    getConfig: async () => ({ ...DEFAULT_CONFIG, commentAction: 'remove', ...overrides }),
     getModNotes: async (_sub, user) => notesOn(user),
     addModNote: writeNote,
     getKarma: async () => karma,
     isModerator: async () => false,
     isApproved: async () => false,
+    filterComment: async (id) => void filtered.push(id),
     removeComment: async (id) => void removed.push(id),
     banUser: async (request) => void bans.push(request),
     appUsername: 'crowd-boot',
@@ -83,7 +86,7 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     log: (message) => void logs.push(message),
     ...extra,
   };
-  return { deps, removed, bans, logs, store, notes, modAction, wait };
+  return { deps, removed, filtered, bans, logs, store, notes, modAction, wait };
 }
 
 const START = 1_700_000_000_000;
@@ -386,7 +389,7 @@ test('each action can be switched off', async () => {
   await processComment(EVENT, noBan.deps);
   assert.deepEqual([noBan.removed.length, noBan.bans.length], [1, 0]);
 
-  const noRemove = fake({ fromComments: -99 }, { removeEnabled: false });
+  const noRemove = fake({ fromComments: -99 }, { commentAction: 'none' });
   await processComment(EVENT, noRemove.deps);
   assert.deepEqual([noRemove.removed.length, noRemove.bans.length], [0, 1]);
 });
@@ -497,4 +500,62 @@ test("a moderator's removal is not a deletion, so the record is kept", async () 
   await processComment(EVENT, f.deps);
   await processCommentDelete({ commentId: 't1_abc', source: 'MODERATOR' }, f.deps);
   assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), 'keep comments');
+});
+
+test('by default a low-karma comment is filtered into the mod queue, not removed', async () => {
+  assert.equal(DEFAULT_CONFIG.commentAction, 'filter');
+  const f = fake({ fromComments: -5 }, { commentAction: 'filter' });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, false]);
+  assert.deepEqual([f.filtered, f.removed], [['t1_abc'], []]);
+  assert.match(f.logs.join('\n'), /filtered comment t1_abc/);
+  assert.equal(f.store.data.size, 0, 'nothing is stored for a filtered comment');
+});
+
+test('approving a filtered comment is an ordinary review of that comment, not an override', async () => {
+  const f = fake({ fromComments: -5 }, { commentAction: 'filter' });
+  await processComment(EVENT, f.deps);
+  assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), undefined);
+  assert.deepEqual(f.notes, []);
+
+  await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual(f.filtered, ['t1_abc', 't1_next'], 'the next comment is held for review as well');
+});
+
+test('in Filter mode a ban still happens, and the comment waits in the mod queue', async () => {
+  const f = fake({ fromComments: -99 }, { commentAction: 'filter' });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
+  assert.deepEqual([f.filtered, f.removed, f.bans.length], [['t1_abc'], [], 1]);
+});
+
+test('if Reddit refuses to filter, the comment is removed instead', async () => {
+  const f = fake({ fromComments: -5 }, { commentAction: 'filter' }, {
+    filterComment: async () => {
+      throw new Error('filter is not available');
+    },
+  });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.equal(outcome.removed, true);
+  assert.deepEqual(f.removed, ['t1_abc']);
+  assert.match(f.logs.join('\n'), /could not filter comment t1_abc.*removing it instead/);
+  assert.equal(f.store.data.size, 0);
+});
+
+test('"Nothing" leaves comments up but can still ban', async () => {
+  const f = fake({ fromComments: -99 }, { commentAction: 'none' });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.banned], [false, true]);
+  assert.deepEqual([f.filtered, f.removed], [[], []]);
+});
+
+test('the comment choice is read from settings, including the old tick', () => {
+  assert.equal(parseConfig({}).commentAction, 'filter');
+  assert.equal(parseConfig({ commentAction: ['remove'] }).commentAction, 'remove');
+  assert.equal(parseConfig({ commentAction: 'none' }).commentAction, 'none');
+  assert.equal(parseConfig({ commentAction: 'something else' }).commentAction, 'filter');
+  // A subreddit that had unticked "Remove comments" keeps its comments left alone.
+  assert.equal(parseConfig({ removeEnabled: false }).commentAction, 'none');
+  assert.equal(parseConfig({ removeEnabled: true }).commentAction, 'filter');
+  assert.equal(parseConfig({ removeEnabled: false, commentAction: 'remove' }).commentAction, 'remove');
 });

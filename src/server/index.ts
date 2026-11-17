@@ -75,6 +75,9 @@ const deps: Deps = {
     (await reddit.getModerators({ subredditName, username }).all()).some(named(username)),
   isApproved: async (subredditName, username) =>
     (await reddit.getApprovedUsers({ subredditName, username }).all()).some(named(username)),
+  filterComment: async (commentId, reason) => {
+    await reddit.filter(commentId as `t1_${string}`, { reason });
+  },
   removeComment: async (commentId, note) => {
     await reddit.remove(commentId as `t1_${string}`, false);
     try {

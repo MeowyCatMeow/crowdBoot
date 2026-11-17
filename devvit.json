@@ -36,14 +36,29 @@
         ],
         "defaultValue": "combined"
       },
-      "removeEnabled": {
-        "type": "boolean",
-        "label": "Remove comments from low-karma users",
-        "defaultValue": true
+      "commentAction": {
+        "type": "select",
+        "label": "What to do with comments from low-karma users",
+        "helpText": "Filter hides the comment and puts it in your mod queue for review. Remove takes it down without review.",
+        "options": [
+          {
+            "label": "Filter (hold in the mod queue for review)",
+            "value": "filter"
+          },
+          {
+            "label": "Remove",
+            "value": "remove"
+          },
+          {
+            "label": "Nothing (leave comments up)",
+            "value": "none"
+          }
+        ],
+        "defaultValue": "filter"
       },
       "removeBelow": {
         "type": "number",
-        "label": "Remove comments when subreddit karma is below",
+        "label": "Filter or remove comments when subreddit karma is below",
         "helpText": "0 means any negative karma. Must be 0 or lower.",
         "defaultValue": 0,
         "validationEndpoint": "/internal/settings/validate-threshold"

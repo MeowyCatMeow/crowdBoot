@@ -5,10 +5,17 @@
 
 export type KarmaSource = 'combined' | 'comments';
 
+/**
+ * What happens to a low-karma user's comment. "filter" hides it and puts it in
+ * the mod queue for a moderator to review; "remove" takes it down without
+ * review; "none" leaves it up.
+ */
+export type CommentAction = 'filter' | 'remove' | 'none';
+
 export type Config = {
   karmaSource: KarmaSource;
-  removeEnabled: boolean;
-  /** Remove the comment when karma is strictly below this. */
+  commentAction: CommentAction;
+  /** Filter or remove the comment when karma is strictly below this. */
   removeBelow: number;
   banEnabled: boolean;
   /** Ban the author when karma is strictly below this. */
@@ -26,7 +33,7 @@ export const DEFAULT_BAN_MESSAGE =
 
 export const DEFAULT_CONFIG: Config = {
   karmaSource: 'combined',
-  removeEnabled: true,
+  commentAction: 'filter',
   removeBelow: 0,
   banEnabled: true,
   banBelow: -10,
@@ -78,7 +85,7 @@ export function parseConfig(raw: RawSettings): Config {
 
   return {
     karmaSource: asChoice(raw.karmaSource) === 'comments' ? 'comments' : 'combined',
-    removeEnabled: asBoolean(raw.removeEnabled, d.removeEnabled),
+    commentAction: commentActionFrom(raw),
     removeBelow: Math.min(0, asNumber(raw.removeBelow, d.removeBelow)),
     banEnabled: asBoolean(raw.banEnabled, d.banEnabled),
     banBelow: Math.min(0, asNumber(raw.banBelow, d.banBelow)),
@@ -94,6 +101,16 @@ export function parseConfig(raw: RawSettings): Config {
   };
 }
 
+/**
+ * Reads the choice from the settings page. Before it was a choice it was a
+ * tick; a subreddit that had unticked it keeps its comments left alone.
+ */
+function commentActionFrom(raw: RawSettings): CommentAction {
+  const choice = asChoice(raw.commentAction);
+  if (choice === 'filter' || choice === 'remove' || choice === 'none') return choice;
+  return raw.removeEnabled === false ? 'none' : DEFAULT_CONFIG.commentAction;
+}
+
 export type Karma = { fromComments?: number | undefined; fromPosts?: number | undefined };
 
 export function karmaFor(karma: Karma, source: KarmaSource): number {
@@ -103,7 +120,7 @@ export function karmaFor(karma: Karma, source: KarmaSource): number {
 
 export function decide(karma: number, config: Config): { remove: boolean; ban: boolean } {
   return {
-    remove: config.removeEnabled && karma < config.removeBelow,
+    remove: config.commentAction !== 'none' && karma < config.removeBelow,
     ban: config.banEnabled && karma < config.banBelow,
   };
 }
@@ -191,6 +208,8 @@ export type Deps = {
   getKarma(username: string): Promise<Karma | undefined>;
   isModerator(subredditName: string, username: string): Promise<boolean>;
   isApproved(subredditName: string, username: string): Promise<boolean>;
+  /** Hides the comment and puts it in the mod queue, showing moderators the reason. */
+  filterComment(commentId: string, reason: string): Promise<void>;
   removeComment(commentId: string, note: string): Promise<void>;
   banUser(request: BanRequest): Promise<void>;
   /** The app's own account name, so it never acts on itself. */
@@ -204,6 +223,7 @@ export type Outcome = {
   /** Why nothing was checked, if the author was skipped. */
   skipped?: string;
   karma?: number;
+  /** The comment was taken down: removed, or filtered into the mod queue. */
   removed: boolean;
   banned: boolean;
 };
@@ -221,7 +241,7 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   }
 
   const config = await deps.getConfig();
-  if (!config.removeEnabled && !config.banEnabled) return { ...NOTHING, skipped: 'app disabled' };
+  if (config.commentAction === 'none' && !config.banEnabled) return { ...NOTHING, skipped: 'app disabled' };
   if (config.exemptUsers.has(author)) return { ...NOTHING, skipped: 'exempt user' };
 
   // Karma first: almost everyone is above the limit, so most comments stop here
@@ -237,7 +257,7 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   if (override.ban) decision.ban = false;
   // A ban always takes the comment with it, even if the two checkpoints were
   // entered the wrong way round (ban checkpoint above the removal checkpoint).
-  if (decision.ban && config.removeEnabled) decision.remove = true;
+  if (decision.ban && config.commentAction !== 'none') decision.remove = true;
   if (override.remove) decision.remove = false;
   if (!decision.remove && !decision.ban) {
     return { ...NOTHING, karma, skipped: 'moderator override' };
@@ -251,15 +271,25 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   }
 
   const who = `u/${authorName} (subreddit karma ${karma})`;
-  // Remove and ban independently, so a failure in one doesn't block the other.
+  // Take the comment down and ban independently, so a failure in one doesn't block the other.
   let removed = false;
   if (decision.remove) {
     const limit = decision.ban ? Math.max(config.removeBelow, config.banBelow) : config.removeBelow;
+    const why = `Crowd Boot: subreddit karma ${karma} is below ${limit}`;
     try {
-      await deps.removeComment(commentId, `Crowd Boot: subreddit karma ${karma} is below ${limit}`);
+      if (config.commentAction === 'filter' && (await filtered(deps, commentId, why, who))) {
+        // A filtered comment waits in the mod queue. Approving it there is an
+        // ordinary review of that one comment, so nothing is recorded for it.
+      } else {
+        await deps.removeComment(commentId, why);
+        deps.log(`removed comment ${commentId} by ${who}`);
+        // Only a removal made on purpose is remembered, so that a moderator
+        // reversing it can be recognised.
+        if (config.commentAction === 'remove') {
+          await remember(deps, keys.removed(commentId), authorName, MEMORY_DAYS);
+        }
+      }
       removed = true;
-      deps.log(`removed comment ${commentId} by ${who}`);
-      await remember(deps, keys.removed(commentId), authorName, MEMORY_DAYS);
     } catch (error) {
       deps.log(`FAILED to remove comment ${commentId} by ${who}: ${String(error)}`);
     }
@@ -297,6 +327,22 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   }
 
   return { karma, removed, banned };
+}
+
+/**
+ * Puts the comment in the mod queue. Returns false, without throwing, if Reddit
+ * refuses: filtering is a newer part of Reddit, and removing the comment is
+ * better than leaving a low-karma comment up.
+ */
+async function filtered(deps: Deps, commentId: string, why: string, who: string): Promise<boolean> {
+  try {
+    await deps.filterComment(commentId, why);
+    deps.log(`filtered comment ${commentId} by ${who}`);
+    return true;
+  } catch (error) {
+    deps.log(`could not filter comment ${commentId} by ${who}, removing it instead: ${String(error)}`);
+    return false;
+  }
 }
 
 /** True if Crowd Boot banned this user within the last few minutes. Never throws. */
