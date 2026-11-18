@@ -7,10 +7,10 @@ any rules, so mods can't justify a ban, but the community clearly doesn't want
 them around.
 
 Crowd Boot uses subreddit karma as the signal. When the community consistently
-downvotes someone, their comments are removed and, eventually, they're banned.
-Disagreement still has room, and the sub avoids filling up with shit talkers.
-It's not a hard line drawn by one mod, and people can earn their karma back by
-posting.
+downvotes someone, their comments are reported, filtered or removed and,
+eventually, they're banned. Disagreement still has room, and the sub avoids
+filling up with shit talkers. It's not a hard line drawn by one mod, and people
+can earn their karma back by posting.
 
 ## How it works
 
