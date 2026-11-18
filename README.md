@@ -1,5 +1,19 @@
 # Crowd Boot
 
+## Why this exists
+
+Some people only come to a sub to trash talk. They don't insult anyone or break
+any rules, so mods can't justify a ban, but the community clearly doesn't want
+them around.
+
+Crowd Boot uses subreddit karma as the signal. When the community consistently
+downvotes someone, their comments are removed and, eventually, they're banned.
+Disagreement still has room, and the sub avoids filling up with shit talkers.
+It's not a hard line drawn by one mod, and people can earn their karma back by
+posting.
+
+## How it works
+
 When someone posts or edits a comment, Crowd Boot looks up the karma they have
 earned **in your subreddit** (not sitewide) and acts on it.
 
