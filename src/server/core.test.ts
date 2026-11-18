@@ -14,7 +14,6 @@ import {
   processCommentDelete,
   processModAction,
   type Store,
-  textChanged,
   thresholdError,
 } from './core.ts';
 
@@ -638,12 +637,4 @@ test('with comments left alone, an edit does nothing at all', async () => {
   const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
   assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, false, false]);
   assert.deepEqual(f.bans, []);
-});
-
-test('an edit only counts when the text really changed', () => {
-  assert.equal(textChanged('old text', 'new text'), true);
-  assert.equal(textChanged('same', 'same'), false);
-  assert.equal(textChanged('', 'new text'), false);
-  assert.equal(textChanged(undefined, 'new text'), false);
-  assert.equal(textChanged('old text', undefined), false);
 });

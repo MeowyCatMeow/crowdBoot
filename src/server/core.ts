@@ -148,14 +148,6 @@ export type CommentEvent = {
   edited?: boolean;
 };
 
-/**
- * Whether an edit really changed the comment's text. Reddit's "comment updated"
- * event carries the text from before the edit.
- */
-export function textChanged(previousBody: unknown, body: unknown): boolean {
-  return typeof previousBody === 'string' && previousBody !== '' && typeof body === 'string' && previousBody !== body;
-}
-
 export type BanRequest = {
   username: string;
   subredditName: string;

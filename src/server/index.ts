@@ -25,7 +25,6 @@ import {
   processCommentDelete,
   processModAction,
   type Store,
-  textChanged,
   thresholdError,
 } from './core.ts';
 
@@ -129,11 +128,13 @@ app.post<unknown, TriggerResponse, OnCommentCreateRequest>(
 );
 
 // An edited comment is checked like a new one, so nobody can get a comment
-// past the moderators and then rewrite it.
+// past the moderators and then rewrite it. Seen live: Reddit sends this event
+// only when the author edits (not for approvals, reports or removals), and
+// leaves its "previous text" empty, so there is nothing to compare against.
 app.post<unknown, TriggerResponse, OnCommentUpdateRequest>(
   '/internal/triggers/comment-update',
   async (req, res) => {
-    if (textChanged(req.body.previousBody, req.body.comment?.body)) await check(req.body, true);
+    await check(req.body, true);
     res.json({});
   }
 );
