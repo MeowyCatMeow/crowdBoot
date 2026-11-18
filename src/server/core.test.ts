@@ -39,6 +39,7 @@ function memoryStore(): Store & { data: Map<string, string>; ttls: Map<string, n
 function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps> = {}) {
   const removed: string[] = [];
   const filtered: string[] = [];
+  const reported: string[] = [];
   const bans: BanRequest[] = [];
   const logs: string[] = [];
   const store = memoryStore();
@@ -79,6 +80,7 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     isModerator: async () => false,
     isApproved: async () => false,
     filterComment: async (id) => void filtered.push(id),
+    reportComment: async (id) => void reported.push(id),
     removeComment: async (id) => void removed.push(id),
     banUser: async (request) => void bans.push(request),
     appUsername: 'crowd-boot',
@@ -86,7 +88,7 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     log: (message) => void logs.push(message),
     ...extra,
   };
-  return { deps, removed, filtered, bans, logs, store, notes, modAction, wait };
+  return { deps, removed, filtered, reported, bans, logs, store, notes, modAction, wait };
 }
 
 const START = 1_700_000_000_000;
@@ -553,9 +555,53 @@ test('the comment choice is read from settings, including the old tick', () => {
   assert.equal(parseConfig({}).commentAction, 'filter');
   assert.equal(parseConfig({ commentAction: ['remove'] }).commentAction, 'remove');
   assert.equal(parseConfig({ commentAction: 'none' }).commentAction, 'none');
+  assert.equal(parseConfig({ commentAction: 'report' }).commentAction, 'report');
   assert.equal(parseConfig({ commentAction: 'something else' }).commentAction, 'filter');
   // A subreddit that had unticked "Remove comments" keeps its comments left alone.
   assert.equal(parseConfig({ removeEnabled: false }).commentAction, 'none');
   assert.equal(parseConfig({ removeEnabled: true }).commentAction, 'filter');
   assert.equal(parseConfig({ removeEnabled: false, commentAction: 'remove' }).commentAction, 'remove');
+});
+
+test('Report leaves the comment up and flags it for the moderators', async () => {
+  const f = fake({ fromComments: -5 }, { commentAction: 'report' });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, true, false]);
+  assert.deepEqual([f.reported, f.filtered, f.removed], [['t1_abc'], [], []]);
+  assert.match(f.logs.join(' '), /reported comment t1_abc/);
+  assert.equal(f.store.data.size, 0, 'nothing is stored for a reported comment');
+
+  // Approving it in the queue is an ordinary review: the next comment is reported too.
+  assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), undefined);
+  await processComment(NEXT_EVENT, f.deps);
+  assert.deepEqual(f.reported, ['t1_abc', 't1_next']);
+  assert.deepEqual(f.notes, []);
+});
+
+test('in Report mode a ban still happens, and the comment is flagged, not hidden', async () => {
+  const f = fake({ fromComments: -99 }, { commentAction: 'report' });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, true, true]);
+  assert.deepEqual([f.reported, f.removed, f.bans.length], [['t1_abc'], [], 1]);
+});
+
+test('a failed report is logged and does not stop the ban', async () => {
+  const f = fake({ fromComments: -99 }, { commentAction: 'report' }, {
+    reportComment: async () => {
+      throw new Error('reddit is down');
+    },
+  });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, false, true]);
+  assert.match(f.logs.join(' '), /FAILED to report comment t1_abc/);
+});
+
+test('an override note stops filtering and reporting as well as removing', async () => {
+  for (const commentAction of ['filter', 'report', 'remove'] as const) {
+    const f = fake({ fromComments: -5 }, { commentAction });
+    f.notes.push("SomeUser: Crowd Boot will no longer remove this user's comments");
+    const outcome = await processComment(EVENT, f.deps);
+    assert.equal(outcome.skipped, 'moderator override', commentAction);
+    assert.deepEqual([f.filtered, f.reported, f.removed], [[], [], []], commentAction);
+  }
 });

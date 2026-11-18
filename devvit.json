@@ -39,14 +39,18 @@
       "commentAction": {
         "type": "select",
         "label": "What to do with comments from low-karma users",
-        "helpText": "Filter hides the comment and puts it in your mod queue for review. Remove takes it down without review.",
+        "helpText": "Filter and Report both ask a moderator to decide. Remove does not.",
         "options": [
           {
-            "label": "Filter (hold in the mod queue for review)",
+            "label": "Filter (hide it and send it to the mod queue)",
             "value": "filter"
           },
           {
-            "label": "Remove",
+            "label": "Report (leave it up and flag it in the mod queue)",
+            "value": "report"
+          },
+          {
+            "label": "Remove (hide it, no review)",
             "value": "remove"
           },
           {
@@ -58,7 +62,7 @@
       },
       "removeBelow": {
         "type": "number",
-        "label": "Filter or remove comments when subreddit karma is below",
+        "label": "Filter, report or remove comments when subreddit karma is below",
         "helpText": "0 means any negative karma. Must be 0 or lower.",
         "defaultValue": 0,
         "validationEndpoint": "/internal/settings/validate-threshold"

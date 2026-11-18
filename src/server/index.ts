@@ -78,6 +78,11 @@ const deps: Deps = {
   filterComment: async (commentId, reason) => {
     await reddit.filter(commentId as `t1_${string}`, { reason });
   },
+  reportComment: async (commentId, reason) => {
+    const comment = await reddit.getCommentById(commentId as `t1_${string}`);
+    // Reddit allows a report reason of up to 100 characters.
+    await reddit.report(comment, { reason: reason.slice(0, 100) });
+  },
   removeComment: async (commentId, note) => {
     await reddit.remove(commentId as `t1_${string}`, false);
     try {

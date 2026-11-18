@@ -6,11 +6,13 @@
 export type KarmaSource = 'combined' | 'comments';
 
 /**
- * What happens to a low-karma user's comment. "filter" hides it and puts it in
- * the mod queue for a moderator to review; "remove" takes it down without
- * review; "none" leaves it up.
+ * What happens to a low-karma user's comment.
+ * - "filter" hides it and sends it to the mod queue for a moderator to review.
+ * - "report" leaves it up and flags it in the mod queue.
+ * - "remove" hides it without asking anyone.
+ * - "none" leaves it alone.
  */
-export type CommentAction = 'filter' | 'remove' | 'none';
+export type CommentAction = 'filter' | 'report' | 'remove' | 'none';
 
 export type Config = {
   karmaSource: KarmaSource;
@@ -107,7 +109,7 @@ export function parseConfig(raw: RawSettings): Config {
  */
 function commentActionFrom(raw: RawSettings): CommentAction {
   const choice = asChoice(raw.commentAction);
-  if (choice === 'filter' || choice === 'remove' || choice === 'none') return choice;
+  if (choice === 'filter' || choice === 'report' || choice === 'remove' || choice === 'none') return choice;
   return raw.removeEnabled === false ? 'none' : DEFAULT_CONFIG.commentAction;
 }
 
@@ -210,6 +212,8 @@ export type Deps = {
   isApproved(subredditName: string, username: string): Promise<boolean>;
   /** Hides the comment and puts it in the mod queue, showing moderators the reason. */
   filterComment(commentId: string, reason: string): Promise<void>;
+  /** Leaves the comment up and flags it in the mod queue, showing moderators the reason. */
+  reportComment(commentId: string, reason: string): Promise<void>;
   removeComment(commentId: string, note: string): Promise<void>;
   banUser(request: BanRequest): Promise<void>;
   /** The app's own account name, so it never acts on itself. */
@@ -225,10 +229,12 @@ export type Outcome = {
   karma?: number;
   /** The comment was taken down: removed, or filtered into the mod queue. */
   removed: boolean;
+  /** The comment was left up and flagged in the mod queue. */
+  reported: boolean;
   banned: boolean;
 };
 
-const NOTHING = { removed: false, banned: false };
+const NOTHING = { removed: false, reported: false, banned: false };
 const SYSTEM_ACCOUNTS = new Set(['automoderator', '[deleted]', 'reddit']);
 
 export async function processComment(event: CommentEvent, deps: Deps): Promise<Outcome> {
@@ -271,15 +277,23 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   }
 
   const who = `u/${authorName} (subreddit karma ${karma})`;
-  // Take the comment down and ban independently, so a failure in one doesn't block the other.
+  // Deal with the comment and ban independently, so a failure in one doesn't block the other.
   let removed = false;
+  let reported = false;
   if (decision.remove) {
     const limit = decision.ban ? Math.max(config.removeBelow, config.banBelow) : config.removeBelow;
     const why = `Crowd Boot: subreddit karma ${karma} is below ${limit}`;
     try {
-      if (config.commentAction === 'filter' && (await filtered(deps, commentId, why, who))) {
+      if (config.commentAction === 'report') {
+        // The comment stays up and a moderator decides. Approving it in the
+        // queue is an ordinary review, so nothing is recorded for it.
+        await deps.reportComment(commentId, why);
+        deps.log(`reported comment ${commentId} by ${who}`);
+        reported = true;
+      } else if (config.commentAction === 'filter' && (await filtered(deps, commentId, why, who))) {
         // A filtered comment waits in the mod queue. Approving it there is an
         // ordinary review of that one comment, so nothing is recorded for it.
+        removed = true;
       } else {
         await deps.removeComment(commentId, why);
         deps.log(`removed comment ${commentId} by ${who}`);
@@ -288,10 +302,11 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
         if (config.commentAction === 'remove') {
           await remember(deps, keys.removed(commentId), authorName, MEMORY_DAYS);
         }
+        removed = true;
       }
-      removed = true;
     } catch (error) {
-      deps.log(`FAILED to remove comment ${commentId} by ${who}: ${String(error)}`);
+      const verb = config.commentAction === 'report' ? 'report' : 'remove';
+      deps.log(`FAILED to ${verb} comment ${commentId} by ${who}: ${String(error)}`);
     }
   }
 
@@ -326,7 +341,7 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
     }
   }
 
-  return { karma, removed, banned };
+  return { karma, removed, reported, banned };
 }
 
 /**
