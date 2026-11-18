@@ -11,6 +11,7 @@
   },
   "triggers": {
     "onCommentCreate": "/internal/triggers/comment-create",
+    "onCommentUpdate": "/internal/triggers/comment-update",
     "onModAction": "/internal/triggers/mod-action",
     "onCommentDelete": "/internal/triggers/comment-delete"
   },

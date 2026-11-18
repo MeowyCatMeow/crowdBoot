@@ -14,6 +14,7 @@ import {
   processCommentDelete,
   processModAction,
   type Store,
+  textChanged,
   thresholdError,
 } from './core.ts';
 
@@ -612,4 +613,37 @@ test('an override note stops filtering and reporting as well as removing', async
     assert.equal(outcome.skipped, 'moderator override', commentAction);
     assert.deepEqual([f.filtered, f.reported, f.removed], [[], [], []], commentAction);
   }
+});
+
+test('an edited comment is dealt with like a new one, but an edit never bans', async () => {
+  for (const commentAction of ['report', 'filter', 'remove'] as const) {
+    const f = fake({ fromComments: -99 }, { commentAction });
+    const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
+    assert.equal(outcome.banned, false, commentAction);
+    assert.deepEqual(f.bans, [], commentAction);
+    assert.equal([...f.reported, ...f.filtered, ...f.removed].join(), 't1_abc', commentAction);
+    assert.equal(f.store.data.has('banned:someuser'), false, commentAction);
+  }
+});
+
+test('an edit by someone at or above the comment checkpoint is left alone', async () => {
+  const f = fake({ fromComments: 3 }, { commentAction: 'report' });
+  const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
+  assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, false, false]);
+  assert.deepEqual(f.logs, []);
+});
+
+test('with comments left alone, an edit does nothing at all', async () => {
+  const f = fake({ fromComments: -99 }, { commentAction: 'none' });
+  const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
+  assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, false, false]);
+  assert.deepEqual(f.bans, []);
+});
+
+test('an edit only counts when the text really changed', () => {
+  assert.equal(textChanged('old text', 'new text'), true);
+  assert.equal(textChanged('same', 'same'), false);
+  assert.equal(textChanged('', 'new text'), false);
+  assert.equal(textChanged(undefined, 'new text'), false);
+  assert.equal(textChanged('old text', undefined), false);
 });

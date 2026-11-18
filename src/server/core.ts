@@ -139,7 +139,22 @@ export type CommentEvent = {
   commentId: string;
   authorName: string;
   subredditName: string;
+  /**
+   * True when an existing comment was edited, false or absent for a new one.
+   * An edited comment is dealt with like a new one, but an edit never bans:
+   * a ban is for commenting, and banning again on an edit would restart the
+   * ban of someone who is already serving one.
+   */
+  edited?: boolean;
 };
+
+/**
+ * Whether an edit really changed the comment's text. Reddit's "comment updated"
+ * event carries the text from before the edit.
+ */
+export function textChanged(previousBody: unknown, body: unknown): boolean {
+  return typeof previousBody === 'string' && previousBody !== '' && typeof body === 'string' && previousBody !== body;
+}
 
 export type BanRequest = {
   username: string;
@@ -256,6 +271,7 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   // No karma on record means the user has not earned any here yet: count it as 0.
   const karma = karmaFor((await deps.getKarma(authorName)) ?? {}, config.karmaSource);
   const decision = decide(karma, config);
+  if (event.edited) decision.ban = false;
   // Nothing is logged when nothing is done.
   if (!decision.remove && !decision.ban) return { ...NOTHING, karma };
 

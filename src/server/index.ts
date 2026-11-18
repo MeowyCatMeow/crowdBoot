@@ -9,6 +9,7 @@ import {
 import type {
   OnCommentCreateRequest,
   OnCommentDeleteRequest,
+  OnCommentUpdateRequest,
   OnModActionRequest,
   SettingsValidationRequest,
   SettingsValidationResponse,
@@ -24,6 +25,7 @@ import {
   processCommentDelete,
   processModAction,
   type Store,
+  textChanged,
   thresholdError,
 } from './core.ts';
 
@@ -99,23 +101,39 @@ const app = express();
 // A comment event carries its whole parent post, which can exceed the 100 KB default.
 app.use(express.json({ limit: '10mb' }));
 
+/** Runs the karma check for a comment that was just posted or just edited. */
+async function check(body: OnCommentCreateRequest | OnCommentUpdateRequest, edited: boolean): Promise<void> {
+  const { comment, author, subreddit } = body;
+  try {
+    await processComment(
+      {
+        commentId: comment?.id ?? '',
+        authorName: author?.name ?? comment?.author ?? '',
+        subredditName: subreddit?.name ?? context.subredditName ?? '',
+        edited,
+      },
+      deps
+    );
+  } catch (error) {
+    // Fail open: if anything goes wrong, leave the comment and user alone.
+    log(`error handling comment ${comment?.id ?? '(unknown)'}: ${String(error)}`);
+  }
+}
+
 app.post<unknown, TriggerResponse, OnCommentCreateRequest>(
   '/internal/triggers/comment-create',
   async (req, res) => {
-    const { comment, author, subreddit } = req.body;
-    try {
-      await processComment(
-        {
-          commentId: comment?.id ?? '',
-          authorName: author?.name ?? comment?.author ?? '',
-          subredditName: subreddit?.name ?? context.subredditName ?? '',
-        },
-        deps
-      );
-    } catch (error) {
-      // Fail open: if anything goes wrong, leave the comment and user alone.
-      log(`error handling comment ${comment?.id ?? '(unknown)'}: ${String(error)}`);
-    }
+    await check(req.body, false);
+    res.json({});
+  }
+);
+
+// An edited comment is checked like a new one, so nobody can get a comment
+// past the moderators and then rewrite it.
+app.post<unknown, TriggerResponse, OnCommentUpdateRequest>(
+  '/internal/triggers/comment-update',
+  async (req, res) => {
+    if (textChanged(req.body.previousBody, req.body.comment?.body)) await check(req.body, true);
     res.json({});
   }
 );

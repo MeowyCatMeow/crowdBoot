@@ -1,7 +1,7 @@
 # Crowd Boot
 
-When someone comments, Crowd Boot looks up the karma they have earned **in your
-subreddit** (not sitewide) and:
+When someone posts or edits a comment, Crowd Boot looks up the karma they have
+earned **in your subreddit** (not sitewide) and:
 
 - **reports, filters or removes the comment** (your choice) if their subreddit
   karma is below 0
@@ -31,6 +31,10 @@ You choose one:
 Report and Filter leave the decision to a moderator, who approves the comment
 or removes it. Both show Crowd Boot's reason.
 
+An edited comment is checked again like a new one, so nobody can get a comment
+approved and then rewrite it. An edit never causes a ban; only a new comment
+can.
+
 ## A last chance before the ban
 
 Between the two checkpoints Crowd Boot deals with a user's comments, but they
@@ -53,7 +57,7 @@ You set how generous this is:
 Karma is an approximate reflection of how your community has voted, so upvotes
 and karma don't have a 1:1 relationship. Reddit works it out with its own
 formula. Crowd Boot does no maths of its own: it acts on the subreddit karma
-Reddit reports for the user at the moment they comment.
+Reddit reports for the user at the moment they post or edit a comment.
 
 ## Moderators have the final say
 
