@@ -82,6 +82,7 @@ function fake(karma: Karma, overrides: Partial<Config> = {}, extra: Partial<Deps
     filterComment: async (id) => void filtered.push(id),
     reportComment: async (id) => void reported.push(id),
     removeComment: async (id) => void removed.push(id),
+    commentState: async () => ({ hidden: false, reportReasons: [] }),
     banUser: async (request) => void bans.push(request),
     appUsername: 'crowd-boot',
     now: () => time,
@@ -637,4 +638,40 @@ test('with comments left alone, an edit does nothing at all', async () => {
   const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
   assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, false, false]);
   assert.deepEqual(f.bans, []);
+});
+
+test('an edit of a comment that is already hidden is left alone', async () => {
+  for (const commentAction of ['report', 'filter', 'remove'] as const) {
+    const f = fake({ fromComments: -99 }, { commentAction }, {
+      commentState: async () => ({ hidden: true, reportReasons: [] }),
+    });
+    const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
+    assert.equal(outcome.skipped, 'already dealt with', commentAction);
+    assert.deepEqual([f.reported, f.filtered, f.removed, f.logs], [[], [], [], []], commentAction);
+  }
+});
+
+test("an edit of a comment that still carries Crowd Boot's report is not reported again", async () => {
+  const pending = { hidden: false, reportReasons: ['Crowd Boot: subreddit karma -5 is below 0'] };
+  const f = fake({ fromComments: -5 }, { commentAction: 'report' }, { commentState: async () => pending });
+  const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
+  assert.equal(outcome.skipped, 'already dealt with');
+  assert.deepEqual(f.reported, []);
+});
+
+test("someone else's report does not stop an edit being dealt with", async () => {
+  const other = { hidden: false, reportReasons: ['Rule 2: be civil'] };
+  const f = fake({ fromComments: -5 }, { commentAction: 'report' }, { commentState: async () => other });
+  const outcome = await processComment({ ...EVENT, edited: true }, f.deps);
+  assert.equal(outcome.reported, true);
+});
+
+test('a new comment is dealt with without looking at its state first', async () => {
+  const f = fake({ fromComments: -5 }, { commentAction: 'report' }, {
+    commentState: async () => {
+      throw new Error('should not be asked');
+    },
+  });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.equal(outcome.reported, true);
 });

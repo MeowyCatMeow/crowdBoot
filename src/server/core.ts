@@ -18,7 +18,7 @@ export type CommentAction = 'filter' | 'report' | 'remove' | 'none';
 export type Config = {
   karmaSource: KarmaSource;
   commentAction: CommentAction;
-  /** Filter or remove the comment when karma is strictly below this. */
+  /** Report, filter or remove the comment when karma is strictly below this. */
   removeBelow: number;
   banEnabled: boolean;
   /** Ban the author when karma is strictly below this. */
@@ -121,9 +121,10 @@ export function karmaFor(karma: Karma, source: KarmaSource): number {
   return source === 'comments' ? comments : comments + (karma.fromPosts ?? 0);
 }
 
-export function decide(karma: number, config: Config): { remove: boolean; ban: boolean } {
+export function decide(karma: number, config: Config): { comment: boolean; ban: boolean } {
   return {
-    remove: config.commentAction !== 'none' && karma < config.removeBelow,
+    // Whether to deal with the comment: report, filter or remove it, as chosen.
+    comment: config.commentAction !== 'none' && karma < config.removeBelow,
     ban: config.banEnabled && karma < config.banBelow,
   };
 }
@@ -223,6 +224,8 @@ export type Deps = {
   /** Leaves the comment up and flags it in the mod queue, showing moderators the reason. */
   reportComment(commentId: string, reason: string): Promise<void>;
   removeComment(commentId: string, note: string): Promise<void>;
+  /** How the comment stands now: hidden from readers, and why moderators have reported it. */
+  commentState(commentId: string): Promise<{ hidden: boolean; reportReasons: string[] }>;
   banUser(request: BanRequest): Promise<void>;
   /** The app's own account name, so it never acts on itself. */
   appUsername?: string | undefined;
@@ -243,6 +246,8 @@ export type Outcome = {
 };
 
 const NOTHING = { removed: false, reported: false, banned: false };
+/** Every reason Crowd Boot gives for a report, filter or removal starts with this. */
+const REASON = 'Crowd Boot:';
 const SYSTEM_ACCOUNTS = new Set(['automoderator', '[deleted]', 'reddit']);
 
 export async function processComment(event: CommentEvent, deps: Deps): Promise<Outcome> {
@@ -265,16 +270,16 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
   const decision = decide(karma, config);
   if (event.edited) decision.ban = false;
   // Nothing is logged when nothing is done.
-  if (!decision.remove && !decision.ban) return { ...NOTHING, karma };
+  if (!decision.comment && !decision.ban) return { ...NOTHING, karma };
 
   // A moderator who reversed an earlier Crowd Boot action has the final say.
   const override = overridesIn(await deps.getModNotes(subredditName, authorName));
   if (override.ban) decision.ban = false;
   // A ban always takes the comment with it, even if the two checkpoints were
   // entered the wrong way round (ban checkpoint above the removal checkpoint).
-  if (decision.ban && config.commentAction !== 'none') decision.remove = true;
-  if (override.remove) decision.remove = false;
-  if (!decision.remove && !decision.ban) {
+  if (decision.ban && config.commentAction !== 'none') decision.comment = true;
+  if (override.remove) decision.comment = false;
+  if (!decision.comment && !decision.ban) {
     return { ...NOTHING, karma, skipped: 'moderator override' };
   }
 
@@ -285,13 +290,23 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
     return { ...NOTHING, karma, skipped: 'approved user' };
   }
 
+  // An edited comment that is already hidden, or still carries Crowd Boot's
+  // report, needs nothing more: the moderators will see the new text. Without
+  // this, someone could edit one comment over and over to flood the mod log.
+  if (event.edited) {
+    const state = await deps.commentState(commentId);
+    if (state.hidden || state.reportReasons.some((reason) => reason.startsWith(REASON))) {
+      return { ...NOTHING, karma, skipped: 'already dealt with' };
+    }
+  }
+
   const who = `u/${authorName} (subreddit karma ${karma})`;
   // Deal with the comment and ban independently, so a failure in one doesn't block the other.
   let removed = false;
   let reported = false;
-  if (decision.remove) {
+  if (decision.comment) {
     const limit = decision.ban ? Math.max(config.removeBelow, config.banBelow) : config.removeBelow;
-    const why = `Crowd Boot: subreddit karma ${karma} is below ${limit}`;
+    const why = `${REASON} subreddit karma ${karma} is below ${limit}`;
     try {
       if (config.commentAction === 'report') {
         // The comment stays up and a moderator decides. Approving it in the

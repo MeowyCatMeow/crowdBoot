@@ -84,6 +84,10 @@ const deps: Deps = {
     // Reddit allows a report reason of up to 100 characters.
     await reddit.report(comment, { reason: reason.slice(0, 100) });
   },
+  commentState: async (commentId) => {
+    const comment = await reddit.getCommentById(commentId as `t1_${string}`);
+    return { hidden: comment.removed || comment.spam, reportReasons: comment.modReportReasons };
+  },
   removeComment: async (commentId, note) => {
     await reddit.remove(commentId as `t1_${string}`, false);
     try {
@@ -101,7 +105,7 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 /** Runs the karma check for a comment that was just posted or just edited. */
-async function check(body: OnCommentCreateRequest | OnCommentUpdateRequest, edited: boolean): Promise<void> {
+async function checkComment(body: OnCommentCreateRequest | OnCommentUpdateRequest, edited: boolean): Promise<void> {
   const { comment, author, subreddit } = body;
   try {
     await processComment(
@@ -122,7 +126,7 @@ async function check(body: OnCommentCreateRequest | OnCommentUpdateRequest, edit
 app.post<unknown, TriggerResponse, OnCommentCreateRequest>(
   '/internal/triggers/comment-create',
   async (req, res) => {
-    await check(req.body, false);
+    await checkComment(req.body, false);
     res.json({});
   }
 );
@@ -134,7 +138,7 @@ app.post<unknown, TriggerResponse, OnCommentCreateRequest>(
 app.post<unknown, TriggerResponse, OnCommentUpdateRequest>(
   '/internal/triggers/comment-update',
   async (req, res) => {
-    await check(req.body, true);
+    await checkComment(req.body, true);
     res.json({});
   }
 );
