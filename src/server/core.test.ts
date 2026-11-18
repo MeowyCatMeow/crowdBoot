@@ -504,8 +504,15 @@ test("a moderator's removal is not a deletion, so the record is kept", async () 
   assert.equal(await f.modAction('approvecomment', 'HumanMod', { comment: 't1_abc' }), 'keep comments');
 });
 
-test('by default a low-karma comment is filtered into the mod queue, not removed', async () => {
-  assert.equal(DEFAULT_CONFIG.commentAction, 'filter');
+test('by default a low-karma comment is reported to the moderators, not hidden', async () => {
+  assert.equal(DEFAULT_CONFIG.commentAction, 'report');
+  const f = fake({ fromComments: -5 }, { commentAction: DEFAULT_CONFIG.commentAction });
+  const outcome = await processComment(EVENT, f.deps);
+  assert.deepEqual([outcome.removed, outcome.reported, outcome.banned], [false, true, false]);
+  assert.deepEqual([f.reported, f.filtered, f.removed], [['t1_abc'], [], []]);
+});
+
+test('Filter hides the comment for a moderator to approve or confirm, and stores nothing', async () => {
   const f = fake({ fromComments: -5 }, { commentAction: 'filter' });
   const outcome = await processComment(EVENT, f.deps);
   assert.deepEqual([outcome.removed, outcome.banned], [true, false]);
@@ -524,7 +531,7 @@ test('approving a filtered comment is an ordinary review of that comment, not an
   assert.deepEqual(f.filtered, ['t1_abc', 't1_next'], 'the next comment is held for review as well');
 });
 
-test('in Filter mode a ban still happens, and the comment waits in the mod queue', async () => {
+test('in Filter mode a ban still happens, and the comment is hidden for review', async () => {
   const f = fake({ fromComments: -99 }, { commentAction: 'filter' });
   const outcome = await processComment(EVENT, f.deps);
   assert.deepEqual([outcome.removed, outcome.banned], [true, true]);
@@ -552,14 +559,15 @@ test('"Nothing" leaves comments up but can still ban', async () => {
 });
 
 test('the comment choice is read from settings, including the old tick', () => {
-  assert.equal(parseConfig({}).commentAction, 'filter');
+  assert.equal(parseConfig({}).commentAction, 'report');
+  assert.equal(parseConfig({ commentAction: ['filter'] }).commentAction, 'filter');
   assert.equal(parseConfig({ commentAction: ['remove'] }).commentAction, 'remove');
   assert.equal(parseConfig({ commentAction: 'none' }).commentAction, 'none');
   assert.equal(parseConfig({ commentAction: 'report' }).commentAction, 'report');
-  assert.equal(parseConfig({ commentAction: 'something else' }).commentAction, 'filter');
+  assert.equal(parseConfig({ commentAction: 'something else' }).commentAction, 'report');
   // A subreddit that had unticked "Remove comments" keeps its comments left alone.
   assert.equal(parseConfig({ removeEnabled: false }).commentAction, 'none');
-  assert.equal(parseConfig({ removeEnabled: true }).commentAction, 'filter');
+  assert.equal(parseConfig({ removeEnabled: true }).commentAction, 'report');
   assert.equal(parseConfig({ removeEnabled: false, commentAction: 'remove' }).commentAction, 'remove');
 });
 

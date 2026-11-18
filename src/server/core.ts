@@ -7,8 +7,9 @@ export type KarmaSource = 'combined' | 'comments';
 
 /**
  * What happens to a low-karma user's comment.
- * - "filter" hides it and sends it to the mod queue for a moderator to review.
- * - "report" leaves it up and flags it in the mod queue.
+ * - "report" leaves it up and flags it in the mod queue, under Needs Review.
+ * - "filter" hides it. Reddit lists it under the mod queue's Removed tab as
+ *   "Filtered by" the app, for a moderator to approve or to confirm.
  * - "remove" hides it without asking anyone.
  * - "none" leaves it alone.
  */
@@ -35,7 +36,7 @@ export const DEFAULT_BAN_MESSAGE =
 
 export const DEFAULT_CONFIG: Config = {
   karmaSource: 'combined',
-  commentAction: 'filter',
+  commentAction: 'report',
   removeBelow: 0,
   banEnabled: true,
   banBelow: -10,
@@ -291,8 +292,9 @@ export async function processComment(event: CommentEvent, deps: Deps): Promise<O
         deps.log(`reported comment ${commentId} by ${who}`);
         reported = true;
       } else if (config.commentAction === 'filter' && (await filtered(deps, commentId, why, who))) {
-        // A filtered comment waits in the mod queue. Approving it there is an
-        // ordinary review of that one comment, so nothing is recorded for it.
+        // A filtered comment waits under the mod queue's Removed tab. Approving
+        // it there is an ordinary review of that one comment, so nothing is
+        // recorded for it.
         removed = true;
       } else {
         await deps.removeComment(commentId, why);
